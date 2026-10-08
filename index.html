@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>街ドライブビュー - 性能チェック</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b1020; color: #fff; font-family: system-ui, "Hiragino Sans", "Yu Gothic", sans-serif; overflow: hidden; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #panel { position: fixed; left: 8px; top: 8px; padding: 10px 12px; background: rgba(0,0,0,.6); border-radius: 8px; font-size: 14px; line-height: 1.6; max-width: 92vw; }
+      #fps { font-size: 28px; font-weight: bold; }
+      #panel button { font-size: 14px; margin: 4px 4px 0 0; padding: 6px 10px; border-radius: 6px; border: 0; background: #3b82f6; color: #fff; }
+      #panel button.on { background: #f59e0b; color: #000; }
+      small { opacity: .8; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <div><span id="fps">--</span> コマ/秒 <small id="ms"></small></div>
+      <div>描画方式: <span id="backend">調べ中</span></div>
+      <div>GPU: <span id="gpu">調べ中</span></div>
+      <div>画面: <span id="res"></span></div>
+      <div>
+        負荷:
+        <button data-n="2000">軽い</button><button data-n="20000">ふつう</button><button data-n="80000">重い</button>
+      </div>
+      <div><small>※ これは性能チェック用の仮ページです（街はまだ出ません）。</small></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
