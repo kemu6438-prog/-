@@ -98,6 +98,8 @@ export const TEX = {
   wall: new PolyTexture("brushed_concrete_04", 2.0),
   /** 壁: レンガ */
   brick: new PolyTexture("brick_4", 0.5),
+  /** 地面の芝: 青々した芝（2m 四方） */
+  grass: new PolyTexture("leafy_grass", 2.0),
 };
 
 export function loadTextures(log: (m: string) => void) {

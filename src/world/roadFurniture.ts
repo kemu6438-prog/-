@@ -17,6 +17,9 @@ function rng(seed: number) {
   };
 }
 
+/** 交差点ごとの信号の位相（秒）。車の動き（drive.ts）も同じ値を使う */
+export const nodePhase = (nodeId: number) => rng(nodeId + 5)() * 80;
+
 /** 他の道の車道の上に物を置かないための、線分の格子（空間ハッシュ） */
 class SegGrid {
   private cell = 24;
@@ -128,7 +131,7 @@ export function placeFurniture(lines: RoadLine[], nodes: RoadNode[], opts: { tre
   // 信号（交差点の、車が入ってくる道ごとに 1 本）
   for (const node of nodes) {
     if (!needsSignal(node)) continue;
-    const phase = rng(node.id + 5)() * 80;
+    const phase = nodePhase(node.id);
     for (const arm of node.arms) {
       const line = arm.line;
       if (line.rank < 2 || line.length < 22) continue;

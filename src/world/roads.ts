@@ -9,7 +9,7 @@ import type { LocalFrame } from "../core/geo";
 import { hash21, vnoise, type N } from "../render/noise";
 import { TEX } from "../render/assets";
 import {
-  ZOOM, analyzeNodes, fetchRoadTile, latToTileY, lonToTileX, parseRoadLayer, type RoadLine,
+  ZOOM, analyzeNodes, fetchRoadTile, latToTileY, lonToTileX, parseRoadLayer, type RoadLine, type RoadNode,
 } from "./roadData";
 import { buildRibbon, roadExtra, sidewalkExtra, type Ribbon } from "./roadGeometry";
 import { placeFurniture, type Furniture } from "./roadFurniture";
@@ -57,16 +57,14 @@ function roadMaterial(level: number): THREE.MeshStandardNodeMaterial {
 
   // --- アスファルト: 暗い灰色に、細かい砂粒・タイヤの通り道・つぎはぎ ---
   const n2: N = vnoise(pw.mul(0.35));
-  const n3: N = vnoise(pw.mul(1.7));
   const g1: N = vnoise(pw.mul(22.0));
-  const g2: N = vnoise(pw.mul(70.0));
   const lane: N = abs(fract(abs(u).div(3.5)).sub(0.5)); // 車線の中央で 0.5 付近
   const wheel: N = smoothstep(0.1, 0.0, abs(lane.sub(0.36))).mul(0.5).add(0.0).mul(step(1.5, rank)); // 車輪の通る所は少し明るく磨かれる
   const gw: N = float(1.0).sub(TEX.asphalt.on.mul(0.75)); // 素材が読めたら自作の粒を弱める
-  const base: N = mix(vec3(0.14, 0.14, 0.15), vec3(0.26, 0.255, 0.25), n2.mul(0.8).add(n3.mul(0.2)))
-    .mul(float(0.88).add(g1.mul(0.28).mul(near).mul(gw)).add(g2.mul(0.2).mul(near).mul(gw)))
+  const base: N = mix(vec3(0.17, 0.17, 0.18), vec3(0.3, 0.295, 0.29), n2)
+    .mul(float(0.9).add(g1.mul(0.3).mul(near).mul(gw)))
     .mul(float(1.0).add(wheel.mul(0.1)))
-    .mul(TEX.asphalt.detail2(pw)); // ネットの素材（読み込めたら）の本物のアスファルトの粒
+    .mul(TEX.asphalt.detail(pw)); // ネットの素材（読み込めたら）の本物のアスファルトの粒（1 枚だけ読む＝軽い）
   // 路肩（縁）は少し汚れて暗い
   const gutter: N = smoothstep(hr.sub(0.7), hr.sub(0.05), abs(u));
   const asphalt: N = mix(base, base.mul(vec3(0.78, 0.76, 0.72)), gutter);
@@ -103,7 +101,7 @@ function roadMaterial(level: number): THREE.MeshStandardNodeMaterial {
   const crossE: N = box1(dE, 1.3, 4.2, aaS).mul(zebra).mul(inRoad).mul(hasLines);
   const crossS: N = box1(dS, 1.3, 4.2, aaS).mul(zebra).mul(inRoad).mul(hasLines);
   const paint: N = max(max(lines, max(stopE, stopS)), max(crossE, crossS));
-  const worn: N = float(0.72).add(vnoise(pw.mul(2.3)).mul(0.28)).mul(float(0.85).add(vnoise(pw.mul(11.0)).mul(0.15)));
+  const worn: N = float(0.72).add(vnoise(pw.mul(2.3)).mul(0.28));
   const farFade: N = float(1.0).sub(smoothstep(380.0, 800.0, dist));
   const mark: N = paint.mul(worn).mul(farFade);
   const white: N = vec3(0.8, 0.8, 0.76);
@@ -310,6 +308,9 @@ export type RoadStats = { tiles: number; failedTiles: number; lines: number; nod
 
 export class Roads {
   readonly group = new THREE.Group();
+  /** 読み込んだ道（自動運転が使う） */
+  lines: RoadLine[] = [];
+  nodes: RoadNode[] = [];
   stats: RoadStats = { tiles: 0, failedTiles: 0, lines: 0, nodes: 0, signals: 0, trees: 0, lamps: 0, triangles: 0 };
   private readonly mats = [0, 1, 2, 3, 4].map((l) => roadMaterial(l));
   private readonly walkMat = sidewalkMaterial();
@@ -422,6 +423,8 @@ export class Roads {
     const R2 = this.radius * this.radius * 1.2;
     const near = lines.filter((l) => l.pts[0] * l.pts[0] + l.pts[1] * l.pts[1] < R2);
     const nodes = analyzeNodes(near);
+    this.lines = near;
+    this.nodes = nodes;
     this.stats = { ...this.stats, tiles: layerSeen, failedTiles: failed, lines: near.length, nodes: nodes.length };
     this.log(`道路データ: タイル ${layerSeen}/${jobs.length}（失敗 ${failed}） / 道 ${near.length} 本 / 交差点 ${nodes.length}`);
     if (near.length === 0) {
@@ -468,7 +471,7 @@ export class Roads {
     // --- 道ばたの物 ---
     const f: Furniture = placeFurniture(near, nodes, { treeRadius: this.treeRadius });
     this.lods = [];
-    this.lods.push({ draw: this.treeDraw, shadow: 140, meshes: chunkedInstances(this.group, this.treeGeo, this.treeMat, f.trees, (t, m) => {
+    this.lods.push({ draw: this.treeDraw, shadow: 220, meshes: chunkedInstances(this.group, this.treeGeo, this.treeMat, f.trees, (t, m) => {
       m.compose(new THREE.Vector3(t.x, 0, t.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), t.rot), new THREE.Vector3(t.scale, t.scale * (0.9 + t.tint * 0.25), t.scale));
     }, {
       cast: true,

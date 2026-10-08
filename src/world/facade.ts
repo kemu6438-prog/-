@@ -3,7 +3,7 @@
 // 実装は three の TSL（WebGPU と WebGL 2 の両方で動くシェーダー言語）。
 import * as THREE from "three/webgpu";
 import {
-  abs, attribute, cameraProjectionMatrix, cameraViewMatrix, clamp, cross, dFdx, dFdy, dot, float, floor,
+  abs, attribute, cameraPosition, cameraProjectionMatrix, cameraViewMatrix, clamp, cross, dFdx, dFdy, dot, float, floor,
   fract, length, max, mix, normalize, positionView, positionWorld, smoothstep, step, vec2, vec3, viewportSize,
 } from "three/tsl";
 import { hash21, vnoise, type N } from "../render/noise";
@@ -60,10 +60,23 @@ function buildLook(id: N): Out {
   const v: N = y.div(floorH);
   const fu: N = fract(u);
   const fv: N = fract(v);
-  const fp: N = max(pw.div(bayW), pw.div(floorH)).max(0.0005);
+  // --- 描く細かさ（LOD）: 近い物に力を回し、遠い物・見上げる高さ・高層の最上部は簡単にする ---
+  // 地上（カメラが低い）のときだけ、カメラより 18〜45m 以上高いところを簡単な塗りにする（上空からは普通に描く）
+  const street: N = float(1.0).sub(smoothstep(20.0, 70.0, (cameraPosition as N).y));
+  const upper: N = street.mul(smoothstep(18.0, 45.0, y.sub((cameraPosition as N).y)));
+  // 高層ビルのいちばん上のほう（地上から 100〜140m 以上）は、窓も模様も描かない
+  const topFlat: N = smoothstep(100.0, 140.0, y);
+  const simple: N = clamp(upper.add(topFlat), 0.0, 1.0);
+  const fp0: N = max(pw.div(bayW), pw.div(floorH)).max(0.0005);
+  // 簡単にするぶん、1 ピクセルが大きいことにして、窓が平らな色にとけるようにする
+  const fp: N = fp0.add(simple.mul(0.6));
   const edge = (e: N, x: N): N => smoothstep(e.sub(fp), e.add(fp), x);
-  const far: N = smoothstep(0.3, 0.7, fp);
-  const near: N = float(1.0).sub(far);
+  const far: N = smoothstep(0.05, 0.17, fp);
+  const near: N = float(1.0).sub(smoothstep(0.03, 0.12, fp));
+  // 細い枠・桟は、1 ピクセルより細くなったらすぐ消す（白いちらつきの原因）
+  const crisp: N = float(1.0).sub(smoothstep(0.012, 0.045, fp));
+  // すぐ目の前（約 10m 以内）だけの、さらに細かい質感
+  const close: N = float(1.0).sub(smoothstep(0.004, 0.02, fp));
   const isGround: N = float(1.0).sub(step(1.0, v));
 
   // --- 窓の形（種類ごと） ---
@@ -80,17 +93,17 @@ function buildLook(id: N): Out {
   const win: N = edge(l, fu).mul(float(1.0).sub(edge(r, fu))).mul(edge(b, fv)).mul(float(1.0).sub(edge(t, fv)));
   // 連続窓・カーテンウォールの縦の桟（細い線）
   const isBand: N = step(0.5, s).mul(step(s, 2.5));
-  const mull: N = float(1.0).sub(isBand.mul(float(1.0).sub(edge(float(0.06), fu)).mul(near).mul(0.9)));
+  const mull: N = float(1.0).sub(isBand.mul(float(1.0).sub(edge(float(0.06), fu)).mul(crisp).mul(0.9)));
   const winM: N = win.mul(mull);
   const outer: N = edge(l.sub(0.035), fu)
     .mul(float(1.0).sub(edge(r.add(0.035), fu)))
     .mul(edge(b.sub(0.03), fv))
     .mul(float(1.0).sub(edge(t.add(0.03), fv)));
-  const frame: N = clamp(outer.sub(win), 0.0, 1.0).add(float(1.0).sub(mull).mul(win));
+  const frame: N = clamp(outer.sub(win), 0.0, 1.0).add(float(1.0).sub(mull).mul(win)).mul(crisp);
   const hasWindows: N = step(0.06, h3);
 
   // --- ガラス ---
-  const cellFade: N = float(1.0).sub(smoothstep(0.08, 0.3, fp));
+  const cellFade: N = float(1.0).sub(smoothstep(0.04, 0.14, fp));
   const cell: N = vec2(floor(u), floor(v));
   const wh: N = hash21(cell.add(vec2(h1.mul(113.0), h2.mul(57.0))));
   const curtainP: N = mix(float(0.84), float(0.62), step(2.5, s).mul(step(s, 3.5)));
@@ -131,7 +144,7 @@ function buildLook(id: N): Out {
   // 壁のむら・汚れ
   const surf: N = mix(vec2(positionWorld.x, positionWorld.z), vec2(uMeters, y), wallMask);
   const mott: N = vnoise(surf.mul(0.3)).mul(0.5).add(vnoise(surf.mul(1.3)).mul(0.3)).add(vnoise(surf.mul(6.0)).mul(0.2).mul(near));
-  const mottle: N = float(0.86).add(mott.mul(0.28));
+  const mottle: N = float(0.86).add(mott.mul(0.28).mul(float(1.0).sub(simple.mul(0.7))));
   const streak: N = vnoise(vec2(uMeters.mul(1.5), floor(v).mul(3.1))).mul(float(1.0).sub(fv)).mul(0.2).mul(near).mul(wallMask);
 
   // レンガ・石の目地（近いときだけ）
@@ -160,12 +173,15 @@ function buildLook(id: N): Out {
   const isBrickS: N = step(3.5, s).mul(step(s, 4.5));
   const concreteD: N = TEX.wall.detail(surf);
   const brickD: N = TEX.brick.detail(vec2(uMeters, y));
-  const texD: N = mix(mix(vec3(1, 1, 1), concreteD, 0.75), brickD, isBrickS.mul(wallMask));
+  const detailK: N = float(1.0).sub(simple);
+  // 近いほど壁の質感を少しはっきり（コントラストを上げる）、簡単にする所は平らに
+  const grain: N = float(1.0).add(vnoise(surf.mul(18.0)).sub(0.5).mul(0.22).mul(close));
+  const texD: N = mix(mix(vec3(1, 1, 1), concreteD, mix(0.2, mix(0.75, 0.95, close), detailK)), brickD, isBrickS.mul(wallMask).mul(detailK)).mul(grain);
   let wallBody: N = wallBase.mul(texD).mul(slab).mul(sill).mul(cornice).mul(mottle).mul(float(1.0).sub(streak)).mul(float(1.0).sub(panel)).mul(float(1.0).sub(mortar));
   wallBody = mix(wallBody, vec3(0.3, 0.32, 0.34), rail.mul(0.85));
   wallBody = mix(wallBody, wallBody.mul(0.65), slabLine);
-  const sash: N = vec3(0.86, 0.86, 0.84);
-  wallBody = mix(wallBody, sash, frame.mul(near).mul(hasWindows).mul(0.8).mul(step(s, 1.5).max(step(2.5, s)).max(0.4)));
+  const sash: N = vec3(0.7, 0.7, 0.68);
+  wallBody = mix(wallBody, sash, frame.mul(hasWindows).mul(0.6).mul(step(s, 1.5).max(step(2.5, s)).max(0.4)));
 
   // 1 階の看板と、ひさし
   const signBand: N = shop.mul(edge(float(0.76), fv)).mul(float(1.0).sub(edge(float(0.97), fv)));

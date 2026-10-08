@@ -7,6 +7,7 @@ import { LocalFrame } from "./core/geo";
 import { Buildings } from "./world/buildings";
 import { Roads } from "./world/roads";
 import { signalClock } from "./world/signal";
+import { Driver, EYE_Y } from "./world/drive";
 import { loadTextures } from "./render/assets";
 import { findBuildingTilesets } from "./world/plateau";
 
@@ -175,8 +176,6 @@ async function main() {
     $("shadowrow").appendChild(b);
   });
   shadowBtns.on.classList.add("on");
-  let slowSec = 0;
-  const bootAt = performance.now();
   const setRatio = (r: number) => {
     curRatio = r;
     renderer.setPixelRatio(r);
@@ -293,19 +292,36 @@ async function main() {
   $("places").querySelector("button")!.classList.add("on");
 
   // --- カメラ ---
-  let mode: "auto" | "free" = "auto";
+  let mode: "auto" | "free" | "drive" = "auto";
+  let driver: Driver | null = null;
+  let lookYaw = 0, lookPitch = 0;
   let yaw = 0, pitch = -0.25, orbitT = 0;
   let streetEye = false;
   // 確認用: ?orbit=距離&h=高さ で自動周回の位置を変えられる
   const qs = new URLSearchParams(location.search);
   const orbitR = Number(qs.get("orbit")) || 450;
   const orbitH = Number(qs.get("h")) || 150;
-  const setMode = (m: "auto" | "free") => {
+  const setMode = (m: "auto" | "free" | "drive") => {
     mode = m;
     if (m === "auto") streetEye = false;
     $("auto").classList.toggle("on", m === "auto");
     $("free").classList.toggle("on", m === "free");
+    $("drive").classList.toggle("on", m === "drive");
+    $("hud").style.display = m === "drive" ? "block" : "none";
     $("fwd").style.display = m === "free" && isMobile ? "block" : "none";
+  };
+  // 車に乗る（自動運転）。道路データがそろっていれば、いまの場所に近い道から出発する
+  $("drive").onclick = () => {
+    if (roads.lines.length === 0) { log("道路データがまだ読み込めていません。少し待ってからもう一度押してください"); return; }
+    if (!driver) driver = new Driver(roads.lines, roads.nodes);
+    const from = camera.position;
+    const cx = mode === "drive" ? 0 : Math.abs(from.x) < 2000 && Math.abs(from.z) < 2000 ? from.x : 0;
+    const cz = mode === "drive" ? 0 : Math.abs(from.x) < 2000 && Math.abs(from.z) < 2000 ? from.z : 0;
+    if (!driver.start(cx, cz)) { log("走れる道が見つかりませんでした"); return; }
+    lookYaw = 0; lookPitch = 0;
+    streetEye = false;
+    setMode("drive");
+    log("車に乗りました（自動運転・左側通行）。画面をドラッグすると見回せます");
   };
   $("auto").onclick = () => setMode("auto");
   $("free").onclick = () => setMode("free");
@@ -333,8 +349,13 @@ async function main() {
   addEventListener("pointerup", () => (dragging = false));
   addEventListener("pointermove", (e) => {
     if (!dragging) return;
-    yaw -= (e.clientX - lx) * 0.004;
-    pitch = Math.max(-1.5, Math.min(1.5, pitch - (e.clientY - ly) * 0.004));
+    if (mode === "drive") {
+      lookYaw = Math.max(-2.6, Math.min(2.6, lookYaw - (e.clientX - lx) * 0.004));
+      lookPitch = Math.max(-0.8, Math.min(0.8, lookPitch - (e.clientY - ly) * 0.004));
+    } else {
+      yaw -= (e.clientX - lx) * 0.004;
+      pitch = Math.max(-1.5, Math.min(1.5, pitch - (e.clientY - ly) * 0.004));
+    }
     lx = e.clientX; ly = e.clientY;
   });
   let fwd = false;
@@ -376,13 +397,7 @@ async function main() {
       const fpsNow = (frames * 1000) / acc;
       $("fps").textContent = String(Math.round(fpsNow));
       $("ms").textContent = `（最長 ${worst.toFixed(0)} ms / 処理: 更新 ${(jsUpd / frames).toFixed(1)}（最長 ${worstUpd.toFixed(0)}） + 描画命令 ${(jsRen / frames).toFixed(1)}（最長 ${worstRen.toFixed(0)}） ms）`;
-      // 自動の影切り: 読み込みが落ち着いたあとも 30 コマ/秒を下回り続けたら、影を切る
-      if (shadowOn && !benching && performance.now() - bootAt > 15000) {
-        const st = buildings.stats();
-        const busy = st.downloading + st.parsing + st.queued > 0;
-        if (fpsNow < 30 && !busy) slowSec++; else slowSec = 0;
-        if (slowSec >= 5) { setShadow(false, "（重かったので自動で切りました。パネルで戻せます）"); slowSec = 0; }
-      }
+      // 影は自動では切らない（重いときはパネルの「影」で自分で切る）
       // 自動の解像度調整: 重ければ下げ、軽ければ少しずつ戻す
       if (ratioMode === "auto" && !benching) {
         if (fpsNow < 52) { lowSec++; okSec = 0; } else if (fpsNow > 58.5) { okSec++; lowSec = 0; } else { lowSec = 0; okSec = 0; }
@@ -397,6 +412,18 @@ async function main() {
       const a = orbitT * 0.08;
       camera.position.set(Math.sin(a) * orbitR, orbitH, Math.cos(a) * orbitR);
       camera.lookAt(0, Math.min(30, orbitH), 0);
+    } else if (mode === "drive" && driver) {
+      driver.update(dt, now / 1000);
+      // 見回したあと、ドラッグをやめたら少しずつ正面に戻る
+      if (!dragging) { const k = Math.min(1, dt * 1.5); lookYaw -= lookYaw * k; lookPitch -= lookPitch * k; }
+      camera.position.set(driver.pose.x, EYE_Y, driver.pose.z);
+      camera.rotation.set(-0.02 + lookPitch, driver.yaw + lookYaw, 0, "YXZ");
+      yaw = driver.yaw;
+      pitch = -0.02;
+      const w = driver.waiting;
+      $("hudspeed").textContent = String(Math.round(driver.speedKmh));
+      $("hudlimit").textContent = String(Math.round(driver.limitKmh));
+      $("hudwait").textContent = w ? "信号待ち" : driver.speed < 0.5 ? "" : "走行中";
     } else {
       camera.rotation.set(pitch, yaw, 0, "YXZ");
       const speed = (streetEye ? (keys.has("shift") ? 40 : 10) : keys.has("shift") ? 300 : 80) * dt;

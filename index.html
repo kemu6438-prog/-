@@ -15,6 +15,8 @@
       #log { font-size: 11px; line-height: 1.4; max-height: 130px; overflow: auto; white-space: pre-wrap; opacity: .9; margin-top: 4px; border-top: 1px solid #fff3; padding-top: 4px; }
       #fwd { position: fixed; right: 16px; bottom: 28px; width: 84px; height: 84px; border-radius: 50%; font-size: 15px; display: none; background: #10b981; }
       #hide { position: fixed; right: 8px; top: 8px; }
+      #hud { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); padding: 6px 16px; background: rgba(0,0,0,.45); border-radius: 12px; text-align: center; display: none; pointer-events: none; }
+      #hud b { font-size: 34px; }
     </style>
   </head>
   <body>
@@ -25,13 +27,13 @@
       <div>建物: <span id="tiles">-</span></div>
       <div>場所: <span id="places"></span></div>
       <div>画質: <span id="quality"></span> <small>重いときは下げる</small></div>
-      <div>影: <span id="shadowrow"></span> <small>（重いと自動で「なし」になります）</small></div>
+      <div>影: <span id="shadowrow"></span> <small>（重いときは自分で「なし」にできます）</small></div>
       <div>解像度: <span id="scale"></span> <small>（自動: 重いと下げる）</small></div>
       <div><button id="full">全画面にする</button> <button id="newtab">別タブで開く</button> <small>（Esc で戻る。パネルは右上のボタンで隠せる）</small></div>
       <div><button id="bench">性能の内訳を測る（止まる・動く 約1分半）</button> <small>見たい場所で押して、触らず待つ</small></div>
       <div>建物の作り: <span id="lod"></span></div>
       <div>読み込む範囲: <span id="radius"></span></div>
-      <div>カメラ: <button id="auto">自動で周回</button><button id="free">自分で動かす</button><button id="street">地上目線(1.6m)</button>
+      <div>カメラ: <button id="auto">自動で周回</button><button id="free">自分で動かす</button><button id="street">地上目線(1.6m)</button><button id="drive">車に乗る（自動運転）</button>
         <small>（自分で: 画面をドラッグで向き、W A S D で移動、Q/E で上下、Shift で速く）</small></div>
       <div>地面の高さ(m, 楕円体高): <b id="gh"></b>
         <button data-g="-5">-5</button><button data-g="-1">-1</button><button data-g="1">+1</button><button data-g="5">+5</button>
@@ -39,6 +41,7 @@
       <div id="log"></div>
       <div style="margin-top:6px;font-size:11px;opacity:.7">出典: 3D都市モデル Project PLATEAU（国土交通省）／道路: 国土地理院ベクトルタイル／質感の素材: Poly Haven（CC0）</div>
     </div>
+    <div id="hud"><b id="hudspeed">0</b> km/h <small>（制限 <span id="hudlimit">-</span>）</small> <small id="hudwait"></small></div>
     <button id="hide">パネル</button>
     <button id="fwd">前へ</button>
     <script type="module" src="/src/main.ts"></script>
