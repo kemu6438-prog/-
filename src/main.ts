@@ -187,61 +187,56 @@ async function main() {
     log("別タブで開きました。そちらで「全画面にする」を押してください");
   };
 
-  // --- 性能の内訳を測る（いまの見え方のまま、機能を 1 つずつ切って 1 コマの時間を比べる） ---
+  // --- 性能の内訳を測る（止まっているときと、動いているときの両方で、機能を 1 つずつ切って比べる） ---
   let renderRepeat = 1;
   let benchSamples: number[] | null = null;
   let benching = false;
+  let benchMoving = false;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   async function runBench() {
     if (benching) return;
     benching = true;
     const keepMode = ratioMode;
-    const setAll = (o: { shadow: boolean; ao: boolean; post: boolean }, b: boolean, r: boolean, ratio: number) => {
+    const setAll = (o: { shadow: boolean; ao: boolean; post: boolean }, b: boolean, r: boolean, ratio: number, frozen = false) => {
       look.setOptions(o);
+      look.freezeShadow(frozen);
       buildings.group.visible = b;
       roads.group.visible = r;
       if (ratio !== curRatio) setRatio(ratio);
     };
     const ALL = { shadow: true, ao: true, post: true };
-    const steps: [string, () => void][] = [
-      ["いまの設定", () => setAll(ALL, true, true, baseRatio)],
-      ["影を切る", () => setAll({ ...ALL, shadow: false }, true, true, baseRatio)],
-      ["影＋暗がりを切る", () => setAll({ shadow: false, ao: false, post: true }, true, true, baseRatio)],
-      ["影＋暗がり＋にじみ・縁なめらかを切る", () => setAll({ shadow: false, ao: false, post: false }, true, true, baseRatio)],
-      ["建物を隠す", () => setAll(ALL, false, true, baseRatio)],
-      ["道路・木・信号を隠す", () => setAll(ALL, true, false, baseRatio)],
-      ["解像度を半分にする", () => setAll(ALL, true, true, baseRatio * 0.5)],
+    // [名前, 動かすか, 設定]
+    const steps: [string, boolean, () => void][] = [
+      ["止まっている・いまの設定", false, () => setAll(ALL, true, true, baseRatio)],
+      ["動く・いまの設定", true, () => setAll(ALL, true, true, baseRatio)],
+      ["動く・影の描き直しを止める", true, () => setAll(ALL, true, true, baseRatio, true)],
+      ["動く・影を切る", true, () => setAll({ ...ALL, shadow: false }, true, true, baseRatio)],
+      ["動く・後処理（暗がり・にじみ・縁なめらか）を切る", true, () => setAll({ shadow: true, ao: false, post: false }, true, true, baseRatio)],
+      ["動く・建物を隠す", true, () => setAll(ALL, false, true, baseRatio)],
+      ["動く・道路・木・信号を隠す", true, () => setAll(ALL, true, false, baseRatio)],
+      ["動く・解像度を半分にする", true, () => setAll(ALL, true, true, baseRatio * 0.5)],
     ];
-    log("【性能の内訳を測定中】約 40 秒、カメラを動かさず待ってください");
+    log("【性能の内訳を測定中】約 1 分。自動で少し前後に動きます。触らずに待ってください");
     const res: { name: string; ms: number }[] = [];
-    for (const [name, apply] of steps) {
+    for (const [name, moving, apply] of steps) {
       apply();
-      await sleep(4500); // 新しい設定の準備（シェーダーの作り直し・読み込み）を待つ
+      benchMoving = moving;
+      await sleep(4500); // 新しい設定の準備（シェーダーの作り直し）を待つ
       benchSamples = [];
       await sleep(3500);
       const a = benchSamples;
       benchSamples = null;
       const sorted = [...a].sort((x, y) => x - y);
-      const ms = sorted.length ? sorted[Math.floor(sorted.length / 2)] : NaN; // 中央値（一瞬の引っかかりに引きずられない）
+      const ms = sorted.length ? sorted[Math.floor(sorted.length / 2)] : NaN; // 中央値
+      const avg = a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
       res.push({ name, ms });
-      log(`  ${name}: 1コマ ${ms.toFixed(1)} ms（${(1000 / ms).toFixed(0)} コマ/秒）`);
+      log(`  ${name}: 中央 ${ms.toFixed(0)} ms / 平均 ${avg.toFixed(0)} ms（約 ${(1000 / avg).toFixed(0)} コマ/秒）`);
     }
+    benchMoving = false;
     setAll(ALL, true, true, baseRatio);
-    renderRepeat = 1;
     ratioMode = keepMode;
     setRatio(keepMode === "auto" ? baseRatio : baseRatio * keepMode);
-    const base = res[0].ms;
-    const gain = (i: number) => base - res[i].ms;
-    const parts: [string, number][] = [
-      ["影", gain(1)],
-      ["暗がり(AO)", gain(2) - gain(1)],
-      ["にじみ・縁なめらか", gain(3) - gain(2)],
-      ["建物", gain(4)],
-      ["道路・木・信号", gain(5)],
-    ];
-    log("【結果】1コマの時間のうち、その機能が使っている目安（ms。大きいほど重い）:");
-    for (const [n, v] of parts) log(`  ${n}: 約 ${v.toFixed(1)} ms`);
-    log(`  解像度を半分にすると ${base.toFixed(1)} → ${res[6].ms.toFixed(1)} ms（${res[6].ms < base * 0.65 ? "描画の細かさ（ピクセル数）が主な重さ" : "ピクセル数以外（形の数など）も重い"}）`);
+    log("【測定おわり】上の行をそのまま貼ってください");
     benching = false;
   }
   $("bench").onclick = () => void runBench();
@@ -389,6 +384,12 @@ async function main() {
       if (keys.has("q")) move(0, -1, 0);
       if (camera.position.y < (streetEye ? 1.6 : 2)) camera.position.y = streetEye ? 1.6 : 2;
       if (streetEye) camera.position.y = 1.6;
+    }
+    if (benchMoving && mode === "free") {
+      // 測定中は、向いている方向へ 30m/秒で 2 秒進み、2 秒戻る
+      const dir = Math.floor(now / 2000) % 2 === 0 ? 1 : -1;
+      tmp.set(0, 0, -1).applyEuler(new THREE.Euler(0, yaw, 0));
+      camera.position.addScaledVector(tmp, 30 * dt * dir);
     }
     // 地面は常にカメラの真下に敷く（平らな仮の地面）
     ground.position.x = camera.position.x;

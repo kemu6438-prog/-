@@ -20,6 +20,8 @@ export type Look = {
   render(): void;
   /** 性能の切り分け用: 影・暗がり(AO)・光のにじみと縁のなめらか化 を個別に切る */
   setOptions(o: Partial<{ shadow: boolean; ao: boolean; post: boolean }>): void;
+  /** true の間は影の絵を描き直さない（測定用） */
+  freezeShadow(b: boolean): void;
   groundMaterial: THREE.MeshStandardNodeMaterial;
 };
 
@@ -178,6 +180,7 @@ export function setupLook(
   const shadowCenter = new THREE.Vector3(1e9, 0, 1e9);
   let shadowStamp = 0;
   let shadowDirty = true;
+  let shadowFrozen = false;
   const shadowEvery = qs.get("shadowsync") === "1"; // ?shadowsync=1 で従来どおり毎コマ描く（比較用）
   sun.shadow.autoUpdate = shadowEvery;
 
@@ -200,7 +203,7 @@ export function setupLook(
     // 影の絵は毎コマ描き直さない（中・高画質が重い主な理由）。注目点が 25m ずれたとき、または 1.5 秒ごと、
     // 切り替え直後にだけ描き直す。描き直すときに太陽の位置も一緒に動かすので、影がずれて見えることはない。
     const now = performance.now();
-    if (shadowEvery || shadowDirty || center.distanceTo(shadowCenter) > 25 || now - shadowStamp > 1500) {
+    if (!shadowFrozen && (shadowEvery || shadowDirty || center.distanceTo(shadowCenter) > 25 || now - shadowStamp > 1500)) {
       shadowCenter.copy(center);
       shadowStamp = now;
       shadowDirty = false;
@@ -234,6 +237,7 @@ export function setupLook(
     update,
     render,
     setOptions,
+    freezeShadow: (b: boolean) => { shadowFrozen = b; },
     groundMaterial,
   } as Look;
 }
