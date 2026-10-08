@@ -157,6 +157,26 @@ async function main() {
     };
     $("quality").appendChild(b);
   });
+  // 影のあり/なし（影は重いので、遅いときは自動で切る）
+  let shadowOn = true;
+  const shadowBtns: Record<string, HTMLButtonElement> = {};
+  const setShadow = (on: boolean, why = "") => {
+    shadowOn = on;
+    look.setOptions({ shadow: on });
+    shadowBtns.on.classList.toggle("on", on);
+    shadowBtns.off.classList.toggle("on", !on);
+    log(`影: ${on ? "あり" : "なし"}${why}`);
+  };
+  ([["on", "あり"], ["off", "なし"]] as const).forEach(([k, label]) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = () => setShadow(k === "on");
+    shadowBtns[k] = b;
+    $("shadowrow").appendChild(b);
+  });
+  shadowBtns.on.classList.add("on");
+  let slowSec = 0;
+  const bootAt = performance.now();
   const setRatio = (r: number) => {
     curRatio = r;
     renderer.setPixelRatio(r);
@@ -197,14 +217,15 @@ async function main() {
     if (benching) return;
     benching = true;
     const keepMode = ratioMode;
-    const setAll = (o: { shadow: boolean; ao: boolean; post: boolean }, b: boolean, r: boolean, ratio: number, frozen = false) => {
+    const setAll = (o: { shadow: boolean; ao: boolean; post: boolean }, b: boolean, r: boolean, ratio: number, frozen = false, hideInst = false) => {
       look.setOptions(o);
       look.freezeShadow(frozen);
+      roads.hideInstanced = hideInst;
       buildings.group.visible = b;
       roads.group.visible = r;
       if (ratio !== curRatio) setRatio(ratio);
     };
-    const ALL = { shadow: true, ao: true, post: true };
+    const ALL = { shadow: shadowOn, ao: true, post: true };
     // [名前, 動かすか, 設定]
     const steps: [string, boolean, () => void][] = [
       ["止まっている・いまの設定", false, () => setAll(ALL, true, true, baseRatio)],
@@ -213,7 +234,8 @@ async function main() {
       ["動く・影を切る", true, () => setAll({ ...ALL, shadow: false }, true, true, baseRatio)],
       ["動く・後処理（暗がり・にじみ・縁なめらか）を切る", true, () => setAll({ shadow: true, ao: false, post: false }, true, true, baseRatio)],
       ["動く・建物を隠す", true, () => setAll(ALL, false, true, baseRatio)],
-      ["動く・道路・木・信号を隠す", true, () => setAll(ALL, true, false, baseRatio)],
+      ["動く・道路・木・信号を全部隠す", true, () => setAll(ALL, true, false, baseRatio)],
+      ["動く・木・街灯・信号だけ隠す（道路の面は残す）", true, () => setAll(ALL, true, true, baseRatio, false, true)],
       ["動く・解像度を半分にする", true, () => setAll(ALL, true, true, baseRatio * 0.5)],
     ];
     log("【性能の内訳を測定中】約 1 分。自動で少し前後に動きます。触らずに待ってください");
@@ -234,6 +256,7 @@ async function main() {
     }
     benchMoving = false;
     setAll(ALL, true, true, baseRatio);
+    roads.hideInstanced = false;
     ratioMode = keepMode;
     setRatio(keepMode === "auto" ? baseRatio : baseRatio * keepMode);
     log("【測定おわり】上の行をそのまま貼ってください");
@@ -353,6 +376,13 @@ async function main() {
       const fpsNow = (frames * 1000) / acc;
       $("fps").textContent = String(Math.round(fpsNow));
       $("ms").textContent = `（最長 ${worst.toFixed(0)} ms / 処理: 更新 ${(jsUpd / frames).toFixed(1)}（最長 ${worstUpd.toFixed(0)}） + 描画命令 ${(jsRen / frames).toFixed(1)}（最長 ${worstRen.toFixed(0)}） ms）`;
+      // 自動の影切り: 読み込みが落ち着いたあとも 30 コマ/秒を下回り続けたら、影を切る
+      if (shadowOn && !benching && performance.now() - bootAt > 15000) {
+        const st = buildings.stats();
+        const busy = st.downloading + st.parsing + st.queued > 0;
+        if (fpsNow < 30 && !busy) slowSec++; else slowSec = 0;
+        if (slowSec >= 5) { setShadow(false, "（重かったので自動で切りました。パネルで戻せます）"); slowSec = 0; }
+      }
       // 自動の解像度調整: 重ければ下げ、軽ければ少しずつ戻す
       if (ratioMode === "auto" && !benching) {
         if (fpsNow < 52) { lowSec++; okSec = 0; } else if (fpsNow > 58.5) { okSec++; lowSec = 0; } else { lowSec = 0; okSec = 0; }
@@ -400,6 +430,7 @@ async function main() {
     farGround.position.z = camera.position.z;
 
     signalClock.value = now / 1000;
+    roads.updateLod(camera.position);
     const t1 = performance.now();
     buildings.update();
     const t2 = performance.now();

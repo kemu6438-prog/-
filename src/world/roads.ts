@@ -280,6 +280,7 @@ function chunkedInstances<T extends { x: number; z: number }>(
   }
   const m = new THREE.Matrix4();
   const c = new THREE.Color();
+  const made: THREE.InstancedMesh[] = [];
   for (const list of bins.values()) {
     const g = geom.clone();
     opts.extra?.(g, list);
@@ -297,8 +298,13 @@ function chunkedInstances<T extends { x: number; z: number }>(
     mesh.castShadow = !!opts.cast;
     mesh.receiveShadow = true;
     parent.add(mesh);
+    made.push(mesh);
   }
+  return made;
 }
+
+/** 道ばたの物の塊を、カメラからの距離で出したり隠したりする（遠くの小さな物は描かない・影も落とさない） */
+type Lod = { meshes: THREE.InstancedMesh[]; draw: number; shadow: number };
 
 export type RoadStats = { tiles: number; failedTiles: number; lines: number; nodes: number; signals: number; trees: number; lamps: number; triangles: number };
 
@@ -316,6 +322,9 @@ export class Roads {
   private token = 0;
   radius = 1500;
   treeRadius = 800;
+  private lods: Lod[] = [];
+  /** 測定用: 木・街灯・信号を全部隠す */
+  hideInstanced = false;
 
   constructor(private readonly log: (m: string) => void, private readonly tileUrlOf?: (z: number, x: number, y: number) => string) {
     this.group.name = "roads";
@@ -343,8 +352,26 @@ export class Roads {
     this.signalMat = sm;
   }
 
+  private get treeDraw() {
+    return this.treeRadius > 500 ? 550 : 380;
+  }
+
+  /** 毎コマ呼ぶ。カメラから遠い塊は描かず、近い塊だけ影を落とす */
+  updateLod(cam: THREE.Vector3) {
+    for (const l of this.lods) {
+      for (const m of l.meshes) {
+        const b = m.boundingSphere;
+        if (!b) continue;
+        const d = Math.hypot(b.center.x - cam.x, b.center.z - cam.z) - b.radius;
+        m.visible = !this.hideInstanced && d < l.draw;
+        if (l.shadow > 0) m.castShadow = d < l.shadow;
+      }
+    }
+  }
+
   clear() {
     this.token++;
+    this.lods = [];
     for (const c of [...this.group.children]) {
       this.group.remove(c);
       c.traverse((o) => {
@@ -440,18 +467,19 @@ export class Roads {
 
     // --- 道ばたの物 ---
     const f: Furniture = placeFurniture(near, nodes, { treeRadius: this.treeRadius });
-    chunkedInstances(this.group, this.treeGeo, this.treeMat, f.trees, (t, m) => {
+    this.lods = [];
+    this.lods.push({ draw: this.treeDraw, shadow: 140, meshes: chunkedInstances(this.group, this.treeGeo, this.treeMat, f.trees, (t, m) => {
       m.compose(new THREE.Vector3(t.x, 0, t.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), t.rot), new THREE.Vector3(t.scale, t.scale * (0.9 + t.tint * 0.25), t.scale));
     }, {
       cast: true,
       extra: (g, list) => {
         g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1));
       },
-    });
-    chunkedInstances(this.group, this.lampGeo, this.metalMat, f.lamps, (l, m) => {
+    }) });
+    this.lods.push({ draw: 350, shadow: 0, meshes: chunkedInstances(this.group, this.lampGeo, this.metalMat, f.lamps, (l, m) => {
       m.compose(new THREE.Vector3(l.x, 0, l.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), l.rot), new THREE.Vector3(1, 1, 1));
-    });
-    chunkedInstances(this.group, this.signalGeo, this.signalMat, f.signals, (s, m) => {
+    }) });
+    this.lods.push({ draw: 600, shadow: 0, meshes: chunkedInstances(this.group, this.signalGeo, this.signalMat, f.signals, (s, m) => {
       m.compose(new THREE.Vector3(s.x, 0, s.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), s.rot), new THREE.Vector3(1, 1, 1));
     }, {
       extra: (g, list) => {
@@ -460,7 +488,7 @@ export class Roads {
         g.setAttribute("sig", new THREE.InstancedBufferAttribute(a, 2));
       },
       cell: 400,
-    });
+    }) });
     const triOf = (g: THREE.BufferGeometry, k: number) => (g.index ? g.index.count : g.getAttribute("position").count) / 3 * k;
     tris += triOf(this.treeGeo, f.trees.length) + triOf(this.lampGeo, f.lamps.length) + triOf(this.signalGeo, f.signals.length);
     this.stats = { ...this.stats, signals: f.signals.length, trees: f.trees.length, lamps: f.lamps.length, triangles: tris };
