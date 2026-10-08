@@ -7,7 +7,8 @@ import { LocalFrame } from "./core/geo";
 import { Buildings } from "./world/buildings";
 import { Roads } from "./world/roads";
 import { signalClock } from "./world/signal";
-import { Driver, EYE_Y } from "./world/drive";
+import { Driver } from "./world/drive";
+import { SEATS, createCarInterior, type SeatId } from "./world/carInterior";
 import { loadTextures } from "./render/assets";
 import { findBuildingTilesets } from "./world/plateau";
 
@@ -294,6 +295,10 @@ async function main() {
   // --- カメラ ---
   let mode: "auto" | "free" | "drive" = "auto";
   let driver: Driver | null = null;
+  const car = createCarInterior();
+  car.visible = false;
+  scene.add(car);
+  let seat: SeatId = "driver";
   let lookYaw = 0, lookPitch = 0;
   let yaw = 0, pitch = -0.25, orbitT = 0;
   let streetEye = false;
@@ -308,6 +313,10 @@ async function main() {
     $("free").classList.toggle("on", m === "free");
     $("drive").classList.toggle("on", m === "drive");
     $("hud").style.display = m === "drive" ? "block" : "none";
+    $("hudctl").style.display = m === "drive" ? "block" : "none";
+    car.visible = m === "drive";
+    camera.near = m === "drive" ? 0.3 : 0.8;
+    camera.updateProjectionMatrix();
     $("fwd").style.display = m === "free" && isMobile ? "block" : "none";
   };
   // 車に乗る（自動運転）。道路データがそろっていれば、いまの場所に近い道から出発する
@@ -332,6 +341,20 @@ async function main() {
     pitch = 0;
     streetEye = true;
   };
+  // 座席の選択と、見回しを正面に戻す
+  (Object.keys(SEATS) as SeatId[]).forEach((id) => {
+    const b = document.createElement("button");
+    b.textContent = SEATS[id].label;
+    b.dataset.seat = id;
+    b.onclick = () => {
+      seat = id;
+      lookYaw = 0; lookPitch = 0;
+      for (const o of $("seatrow").querySelectorAll("button")) o.classList.toggle("on", (o as HTMLElement).dataset.seat === id);
+    };
+    if (id === seat) b.classList.add("on");
+    $("seatrow").appendChild(b);
+  });
+  $("lookreset").onclick = () => { lookYaw = 0; lookPitch = 0; };
   setMode("auto");
   $("hide").onclick = () => {
     const p = $("panel");
@@ -350,8 +373,8 @@ async function main() {
   addEventListener("pointermove", (e) => {
     if (!dragging) return;
     if (mode === "drive") {
-      lookYaw = Math.max(-2.6, Math.min(2.6, lookYaw - (e.clientX - lx) * 0.004));
-      lookPitch = Math.max(-0.8, Math.min(0.8, lookPitch - (e.clientY - ly) * 0.004));
+      lookYaw -= (e.clientX - lx) * 0.004;
+      lookPitch = Math.max(-1.45, Math.min(1.45, lookPitch - (e.clientY - ly) * 0.004));
     } else {
       yaw -= (e.clientX - lx) * 0.004;
       pitch = Math.max(-1.5, Math.min(1.5, pitch - (e.clientY - ly) * 0.004));
@@ -414,9 +437,24 @@ async function main() {
       camera.lookAt(0, Math.min(30, orbitH), 0);
     } else if (mode === "drive" && driver) {
       driver.update(dt, now / 1000);
-      // 見回したあと、ドラッグをやめたら少しずつ正面に戻る
-      if (!dragging) { const k = Math.min(1, dt * 1.5); lookYaw -= lookYaw * k; lookPitch -= lookPitch * k; }
-      camera.position.set(driver.pose.x, EYE_Y, driver.pose.z);
+      // 見回しは自由（ドラッグ・矢印キー）。勝手に正面へは戻さない（「正面に戻す」ボタン・R キーで戻る）
+      const lk = 1.8 * dt;
+      if (keys.has("arrowleft")) lookYaw += lk;
+      if (keys.has("arrowright")) lookYaw -= lk;
+      if (keys.has("arrowup")) lookPitch = Math.min(1.45, lookPitch + lk);
+      if (keys.has("arrowdown")) lookPitch = Math.max(-1.45, lookPitch - lk);
+      if (keys.has("r")) { lookYaw = 0; lookPitch = 0; }
+      if (lookYaw > Math.PI) lookYaw -= 2 * Math.PI;
+      if (lookYaw < -Math.PI) lookYaw += 2 * Math.PI;
+      // 車の位置と向き。目は座席の位置（車の向きに合わせて回る）
+      const sy = Math.sin(driver.yaw), cy = Math.cos(driver.yaw);
+      const st = SEATS[seat];
+      // 車の座標 (x: 右, z: 後ろ) → 世界。前 = (-sin, -cos)、右 = (cos, -sin)
+      const ex = driver.pose.x + cy * st.x + sy * st.z;
+      const ez = driver.pose.z - sy * st.x + cy * st.z;
+      car.position.set(driver.pose.x, 0, driver.pose.z);
+      car.rotation.set(0, driver.yaw, 0);
+      camera.position.set(ex, st.y, ez);
       camera.rotation.set(-0.02 + lookPitch, driver.yaw + lookYaw, 0, "YXZ");
       yaw = driver.yaw;
       pitch = -0.02;

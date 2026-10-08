@@ -17,6 +17,7 @@
       #hide { position: fixed; right: 8px; top: 8px; }
       #hud { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); padding: 6px 16px; background: rgba(0,0,0,.45); border-radius: 12px; text-align: center; display: none; pointer-events: none; }
       #hud b { font-size: 34px; }
+      #hudctl { position: fixed; right: 10px; bottom: 14px; display: none; text-align: right; max-width: 60vw; }
     </style>
   </head>
   <body>
@@ -42,6 +43,7 @@
       <div style="margin-top:6px;font-size:11px;opacity:.7">出典: 3D都市モデル Project PLATEAU（国土交通省）／道路: 国土地理院ベクトルタイル／質感の素材: Poly Haven（CC0）</div>
     </div>
     <div id="hud"><b id="hudspeed">0</b> km/h <small>（制限 <span id="hudlimit">-</span>）</small> <small id="hudwait"></small></div>
+    <div id="hudctl"><div id="seatrow"></div><button id="lookreset">正面に戻す (R)</button><div><small>ドラッグか矢印キーで見回せます</small></div></div>
     <button id="hide">パネル</button>
     <button id="fwd">前へ</button>
     <script type="module" src="/src/main.ts"></script>

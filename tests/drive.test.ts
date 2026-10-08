@@ -86,4 +86,78 @@ describe("自動運転の動き", () => {
       expect(Math.hypot(d.pose.x - stopped!.x, d.pose.z - stopped!.z)).toBeLessThan(0.2);
     }
   });
+
+  it("向きは進む向きと同じで、左側の車線を走り、向きがとびとびに変わらない", () => {
+    const d = new Driver(lines, nodes, rand);
+    d.start(210, 100);
+    let t = 0;
+    let prev = { x: d.pose.x, z: d.pose.z };
+    let prevYaw = d.yaw;
+    let maxYawStep = 0;
+    let bad = 0, checked = 0, leftBad = 0, leftChecked = 0;
+    for (let i = 0; i < 12000; i++) {
+      d.update(0.05, t);
+      t += 0.05;
+      const mx = d.pose.x - prev.x, mz = d.pose.z - prev.z;
+      const ml = Math.hypot(mx, mz);
+      if (ml > 0.02) {
+        checked++;
+        if ((mx * d.pose.hx + mz * d.pose.hz) / ml < 0.9) bad++; // 進む向きと車の向きが違う
+        // カメラの向き（yaw）も進む向きと合っている
+        const fx = -Math.sin(d.yaw), fz = -Math.cos(d.yaw);
+        if ((mx * fx + mz * fz) / ml < 0.5) bad++;
+      }
+      let dy = d.yaw - prevYaw;
+      while (dy > Math.PI) dy -= 2 * Math.PI;
+      while (dy < -Math.PI) dy += 2 * Math.PI;
+      maxYawStep = Math.max(maxYawStep, Math.abs(dy));
+      prevYaw = d.yaw;
+      prev = { x: d.pose.x, z: d.pose.z };
+      // 交差点から離れた直線の上では、道の中心より左（進行方向の左）にいる
+      const gx = Math.round(d.pose.x / 200) * 200, gz = Math.round(d.pose.z / 200) * 200;
+      const onVert = Math.abs(d.pose.x - gx) < 6 && Math.abs(d.pose.z - gz) > 40 && Math.abs(d.pose.z - gz) < 160;
+      const onHorz = Math.abs(d.pose.z - gz) < 6 && Math.abs(d.pose.x - gx) > 40 && Math.abs(d.pose.x - gx) < 160;
+      if ((onVert || onHorz) && Math.abs(d.pose.hx) + Math.abs(d.pose.hz) > 0.99 && d.speed > 1) {
+        leftChecked++;
+        const lat = onVert ? (d.pose.x - gx) : (d.pose.z - gz); // 道の中心からの位置（東・南が正）
+        const leftSign = onVert ? d.pose.hz * -1 * -1 : -d.pose.hx; // 左 = (hz, -hx)
+        // 左ベクトルの x 成分（縦の道）/ z 成分（横の道）
+        const leftComp = onVert ? d.pose.hz : -d.pose.hx;
+        void leftSign;
+        if (lat * leftComp <= 0) leftBad++;
+      }
+    }
+    expect(checked).toBeGreaterThan(1000);
+    expect(bad).toBe(0);
+    expect(leftChecked).toBeGreaterThan(200);
+    expect(leftBad).toBe(0);
+    expect(maxYawStep).toBeLessThan(0.08); // 0.05 秒で 4.6 度未満（急にぐんと回らない）
+  });
+
+  it("行き止まりでは、なめらかにＵターンして戻る", () => {
+    const one: RoadLine[] = grid(1, 160).slice(0, 1); // 160m の 1 本道
+    const d = new Driver(one, analyzeNodes(one), rand);
+    expect(d.start(0, 80)).toBe(true);
+    let t = 0;
+    let prev = { x: d.pose.x, z: d.pose.z };
+    let prevYaw = d.yaw;
+    let maxJump = 0, maxYawStep = 0;
+    let turned = false;
+    const startHz = d.pose.hz;
+    for (let i = 0; i < 6000; i++) {
+      d.update(0.05, t);
+      t += 0.05;
+      maxJump = Math.max(maxJump, Math.hypot(d.pose.x - prev.x, d.pose.z - prev.z));
+      let dy = d.yaw - prevYaw;
+      while (dy > Math.PI) dy -= 2 * Math.PI;
+      while (dy < -Math.PI) dy += 2 * Math.PI;
+      maxYawStep = Math.max(maxYawStep, Math.abs(dy));
+      prevYaw = d.yaw;
+      prev = { x: d.pose.x, z: d.pose.z };
+      if (d.pose.hz * startHz < -0.9) turned = true;
+    }
+    expect(turned).toBe(true);
+    expect(maxJump).toBeLessThan(1.0);
+    expect(maxYawStep).toBeLessThan(0.1);
+  });
 });

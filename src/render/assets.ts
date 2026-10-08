@@ -100,6 +100,10 @@ export const TEX = {
   brick: new PolyTexture("brick_4", 0.5),
   /** 地面の芝: 青々した芝（2m 四方） */
   grass: new PolyTexture("leafy_grass", 2.0),
+  /** 壁: 塗り壁（しっくい）。汚れ・はがれがある */
+  plaster: new PolyTexture("painted_plaster_wall", 2.0),
+  /** 歩道: 敷石 */
+  pavers: new PolyTexture("concrete_pavers", 1.92),
 };
 
 export function loadTextures(log: (m: string) => void) {

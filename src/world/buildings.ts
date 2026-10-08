@@ -5,6 +5,7 @@ import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import * as THREE from "three/webgpu";
 import type { LocalFrame } from "../core/geo";
 import { ensureFloatAttribute, facadeMaterial, findIdAttribute } from "./facade";
+import { addSkirt } from "./skirt";
 
 let draco: DRACOLoader | null = null;
 function sharedDraco() {
@@ -28,6 +29,8 @@ export class Buildings {
   readonly group = new THREE.Group();
   private readonly renderers: { tiles: TilesRenderer; region: SphereRegion }[] = [];
   private loadedTiles = 0;
+  private skirtOk = 0;
+  private skirtNo = 0;
   radius = 2000;
   /** 1: 箱形(LOD1)に窓や色を塗る / 2: 詳細モデル(LOD2)をそのまま表示（重い） */
   lod: 1 | 2 = 1;
@@ -78,6 +81,18 @@ export class Buildings {
         if (!g.getAttribute("normal")) g.computeVertexNormals();
         const idName = findIdAttribute(g);
         if (idName) ensureFloatAttribute(g, idName);
+        // この建物の座標 → 表示の座標（y が上）。タイルの読み込み直後は、持ち主（scene）より上の行列がまだ掛かっていないので手で掛ける
+        let ok = false;
+        if (idName) {
+          const m = mesh.matrix.clone();
+          mesh.updateMatrix();
+          m.copy(mesh.matrix);
+          for (let p = mesh.parent; p && p !== scene; p = p.parent) { p.updateMatrix(); m.premultiply(p.matrix); }
+          m.premultiply(scene.matrix).premultiply(this.frame.ecefToLocal);
+          ok = addSkirt(g, idName, m.elements);
+        }
+        if (ok) this.skirtOk++; else this.skirtNo++;
+        if ((this.skirtOk + this.skirtNo) % 40 === 1) this.onMessage(`建物の足もと補強（浮き対策）: 済み ${this.skirtOk} / 対象外 ${this.skirtNo}`);
         mesh.material = facadeMaterial(idName);
       });
       this.triOf.set(scene, tri);

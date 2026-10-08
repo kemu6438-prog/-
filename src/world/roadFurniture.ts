@@ -4,7 +4,9 @@ import { SIDEWALK_WIDTH, halfRoad, needsSignal, type RoadLine, type RoadNode } f
 export type TreeInst = { x: number; z: number; rot: number; scale: number; tint: number };
 export type LampInst = { x: number; z: number; rot: number };
 export type SignalInst = { x: number; z: number; rot: number; phase: number; axis: number; reach: number };
-export type Furniture = { trees: TreeInst[]; lamps: LampInst[]; signals: SignalInst[] };
+/** 生け垣・標識・自動販売機など、向きと大きさだけを持つ小物 */
+export type PropInst = { x: number; z: number; rot: number; scale: number; tint: number };
+export type Furniture = { trees: TreeInst[]; lamps: LampInst[]; signals: SignalInst[]; hedges: PropInst[]; signs: PropInst[]; vends: PropInst[] };
 
 function rng(seed: number) {
   let a = (seed * 2654435761) >>> 0;
@@ -85,6 +87,9 @@ export function placeFurniture(lines: RoadLine[], nodes: RoadNode[], opts: { tre
   const trees: TreeInst[] = [];
   const lamps: LampInst[] = [];
   const signals: SignalInst[] = [];
+  const hedges: PropInst[] = [];
+  const signs: PropInst[] = [];
+  const vends: PropInst[] = [];
   const R2 = opts.treeRadius * opts.treeRadius;
 
   for (const line of lines) {
@@ -106,9 +111,36 @@ export function placeFurniture(lines: RoadLine[], nodes: RoadNode[], opts: { tre
           const x = q.x + -q.dz * sg * (hr + Math.min(1.3, sw * 0.5));
           const z = q.z + q.dx * sg * (hr + Math.min(1.3, sw * 0.5));
           if (x * x + z * z > R2) continue;
-          if (r() > treeLine) continue;
+          if (r() > treeLine * 0.667) continue; // 木は 3 分の 2 に間引く
           if (grid.blocked(x, z, line)) continue;
           trees.push({ x, z, rot: r() * 6.283, scale: 0.8 + r() * 0.55, tint: r() });
+        }
+      }
+    }
+    // 生け垣（歩道の外側に、ところどころ）・道路標識・自動販売機
+    {
+      const rp = rng(line.id + 777);
+      for (const sg of [1, -1]) {
+        for (const q of walk(line, rp() * 18, 17, () => (rp() - 0.5) * 8)) {
+          if (!edgeFree(q.s, 10)) continue;
+          const nx = -q.dz * sg, nz = q.dx * sg; // 道の外へ向かう向き
+          const dice = rp();
+          if (dice < 0.34) {
+            const off = hr + sw + 0.7;
+            const x = q.x + nx * off, z = q.z + nz * off;
+            if (x * x + z * z > R2 || grid.blocked(x, z, line)) continue;
+            hedges.push({ x, z, rot: Math.atan2(-q.dz, q.dx), scale: 2.5 + rp() * 4, tint: rp() });
+          } else if (dice < 0.42) {
+            const off = hr + sw + 0.35;
+            const x = q.x + nx * off, z = q.z + nz * off;
+            if (x * x + z * z > R2 || grid.blocked(x, z, line)) continue;
+            vends.push({ x, z, rot: Math.atan2(-nx, -nz), scale: 1, tint: rp() });
+          } else if (dice < 0.5) {
+            const off = hr + 0.75;
+            const x = q.x + nx * off, z = q.z + nz * off;
+            if (x * x + z * z > R2 || grid.blocked(x, z, line)) continue;
+            signs.push({ x, z, rot: Math.atan2(q.dx * sg * -1, q.dz * sg * -1), scale: 1, tint: rp() });
+          }
         }
       }
     }
@@ -151,5 +183,5 @@ export function placeFurniture(lines: RoadLine[], nodes: RoadNode[], opts: { tre
       });
     }
   }
-  return { trees, lamps, signals };
+  return { trees, lamps, signals, hedges, signs, vends };
 }

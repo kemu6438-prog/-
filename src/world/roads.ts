@@ -135,7 +135,7 @@ function sidewalkMaterial(): THREE.MeshStandardNodeMaterial {
   const base: N = mix(vec3(0.5, 0.49, 0.47), vec3(0.62, 0.61, 0.58), vnoise(pw.mul(0.5)).mul(0.5).add(tone.mul(0.5)));
   let col: N = base.mul(float(0.93).add(tone.mul(0.1).mul(near))).mul(float(1.0).sub(joint.mul(0.25)));
   col = col.mul(float(0.92).add(vnoise(pw.mul(30.0)).mul(0.14).mul(near)));
-  col = col.mul(TEX.concrete.detail(pw));
+  col = col.mul(TEX.pavers.detail(pw));
   // 縁石（車道との境の石）
   const kerb: N = smoothstep(hr.add(0.28), hr.add(0.18), u);
   col = mix(col, vec3(0.7, 0.69, 0.66), kerb);
@@ -210,6 +210,57 @@ function treeGeometry(): THREE.BufferGeometry {
   const merged = mergeGeometries(parts.map((g) => (g.index ? g.toNonIndexed() : g)))!;
   merged.computeBoundingSphere();
   return merged;
+}
+
+/** 生け垣: 長さ 1 の箱（置くときに長さを掛ける）。上の角を少し丸めて見せる */
+function hedgeGeometry(): THREE.BufferGeometry {
+  const g = new THREE.BoxGeometry(1, 0.95, 0.75, 1, 2, 1);
+  g.translate(0, 0.475, 0);
+  g.deleteAttribute("uv");
+  const pos = g.getAttribute("position");
+  for (let i = 0; i < pos.count; i++) {
+    if (pos.getY(i) > 0.9) pos.setZ(i, pos.getZ(i) * 0.82);
+  }
+  g.computeVertexNormals();
+  return paint(bare(g), 0x44842b, (y) => 0.7 + 0.4 * THREE.MathUtils.smoothstep(y, 0.0, 0.95));
+}
+
+/** 道路標識（丸い規制標識）: 柱・赤い縁・白地・黒い横棒。前面は +z */
+function signGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const pole = new THREE.CylinderGeometry(0.035, 0.04, 2.7, 6);
+  pole.translate(0, 1.35, 0);
+  parts.push(paint(bare(pole), 0x8a8d90));
+  const disc = (rad: number, thick: number, z: number, color: number) => {
+    const d = new THREE.CylinderGeometry(rad, rad, thick, 16);
+    d.rotateX(Math.PI / 2);
+    d.translate(0, 2.4, z);
+    parts.push(paint(bare(d), color));
+  };
+  disc(0.31, 0.03, 0.0, 0xc8202a);
+  disc(0.31, 0.03, -0.001, 0xc8202a);
+  disc(0.235, 0.034, 0.002, 0xf4f4f0);
+  const bar = new THREE.BoxGeometry(0.32, 0.07, 0.04);
+  bar.translate(0, 2.4, 0.004);
+  parts.push(paint(bare(bar), 0x1c1c22));
+  return mergeGeometries(parts.map((g) => (g.deleteAttribute("uv"), g)))!;
+}
+
+/** 自動販売機: 白い本体に、暗い窓と色つきの商品の列。前面は +z */
+function vendGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const b = (w: number, h: number, d: number, x: number, y: number, z: number, color: number) => {
+    const g = new THREE.BoxGeometry(w, h, d);
+    g.translate(x, y, z);
+    parts.push(paint(bare(g), color));
+  };
+  b(0.78, 1.75, 0.72, 0, 0.875, 0, 0xe4e8ec);
+  b(0.64, 1.02, 0.02, 0, 1.08, 0.365, 0x1b2430);
+  const cols = [0xd62f2f, 0x2f6fd6, 0x3aa65b, 0xe8b730, 0xd62f2f];
+  cols.forEach((c, i) => b(0.58, 0.06, 0.02, 0, 1.44 - i * 0.2, 0.378, c));
+  b(0.7, 0.2, 0.03, 0, 1.64, 0.37, 0xe03a3a);
+  b(0.5, 0.12, 0.02, 0, 0.36, 0.365, 0x15181c);
+  return mergeGeometries(parts.map((g) => (g.deleteAttribute("uv"), g)))!;
 }
 
 function lampGeometry(): THREE.BufferGeometry {
@@ -316,6 +367,9 @@ export class Roads {
   private readonly walkMat = sidewalkMaterial();
   private readonly treeGeo = treeGeometry();
   private readonly lampGeo = lampGeometry();
+  private readonly hedgeGeo = hedgeGeometry();
+  private readonly signGeo = signGeometry();
+  private readonly vendGeo = vendGeometry();
   private readonly signalGeo = signalGeometry();
   private readonly treeMat: THREE.MeshStandardNodeMaterial;
   private readonly metalMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.3, vertexColors: true });
@@ -377,7 +431,7 @@ export class Roads {
       this.group.remove(c);
       c.traverse((o) => {
         const mesh = o as THREE.Mesh;
-        if (mesh.isMesh && mesh.geometry !== this.treeGeo && mesh.geometry !== this.lampGeo && mesh.geometry !== this.signalGeo) mesh.geometry.dispose();
+        if (mesh.isMesh && mesh.geometry !== this.treeGeo && mesh.geometry !== this.lampGeo && mesh.geometry !== this.signalGeo && mesh.geometry !== this.hedgeGeo && mesh.geometry !== this.signGeo && mesh.geometry !== this.vendGeo) mesh.geometry.dispose();
       });
     }
   }
@@ -492,11 +546,28 @@ export class Roads {
       },
       cell: 400,
     }) });
+    // 生け垣・標識・自動販売機（近くだけ描く）
+    const Y = new THREE.Vector3(0, 1, 0);
+    this.lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(this.group, this.hedgeGeo, this.treeMat, f.hedges, (h, m) => {
+      m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, 0.85 + h.tint * 0.4, 1));
+    }, {
+      extra: (g, list) => {
+        g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1));
+      },
+      cell: 200,
+    }) });
+    this.lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(this.group, this.signGeo, this.metalMat, f.signs, (p, m) => {
+      m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
+    }, { cell: 200 }) });
+    this.lods.push({ draw: 200, shadow: 0, meshes: chunkedInstances(this.group, this.vendGeo, this.metalMat, f.vends, (p, m) => {
+      m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
+    }, { cell: 200 }) });
     const triOf = (g: THREE.BufferGeometry, k: number) => (g.index ? g.index.count : g.getAttribute("position").count) / 3 * k;
-    tris += triOf(this.treeGeo, f.trees.length) + triOf(this.lampGeo, f.lamps.length) + triOf(this.signalGeo, f.signals.length);
+    tris += triOf(this.treeGeo, f.trees.length) + triOf(this.lampGeo, f.lamps.length) + triOf(this.signalGeo, f.signals.length)
+      + triOf(this.hedgeGeo, f.hedges.length) + triOf(this.signGeo, f.signs.length) + triOf(this.vendGeo, f.vends.length);
     this.stats = { ...this.stats, signals: f.signals.length, trees: f.trees.length, lamps: f.lamps.length, triangles: tris };
     this.log(
-      `道路を表示: 信号 ${f.signals.length} / 街路樹 ${f.trees.length} / 街灯 ${f.lamps.length} / 三角形 ${(tris / 1e6).toFixed(2)} 百万 / ${(performance.now() - t0).toFixed(0)} ms`,
+      `道路を表示: 信号 ${f.signals.length} / 街路樹 ${f.trees.length} / 街灯 ${f.lamps.length} / 生け垣 ${f.hedges.length} / 標識 ${f.signs.length} / 自販機 ${f.vends.length} / 三角形 ${(tris / 1e6).toFixed(2)} 百万 / ${(performance.now() - t0).toFixed(0)} ms`,
     );
   }
 }
