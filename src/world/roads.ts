@@ -225,6 +225,50 @@ function hedgeGeometry(): THREE.BufferGeometry {
   return paint(bare(g), 0x44842b, (y) => 0.7 + 0.4 * THREE.MathUtils.smoothstep(y, 0.0, 0.95));
 }
 
+/** 低木: 低ポリの丸い茂み（地面すれすれから 0.9m ほど） */
+function shrubGeometry(): THREE.BufferGeometry {
+  const ico = new THREE.IcosahedronGeometry(1, 0);
+  ico.deleteAttribute("uv");
+  ico.deleteAttribute("normal");
+  const g: THREE.BufferGeometry = mergeVertices(ico, 1e-4);
+  const p = g.getAttribute("position");
+  for (let i = 0; i < p.count; i++) {
+    const k = 1 + (hash3(p.getX(i) * 3.1, p.getY(i) * 2.3, p.getZ(i) * 1.7) - 0.5) * 0.4;
+    p.setXYZ(i, p.getX(i) * 0.62 * k, Math.max(p.getY(i) * 0.5 * k, -0.1) + 0.38, p.getZ(i) * 0.62 * k);
+  }
+  g.computeVertexNormals();
+  return paint(bare(g), 0x3f7a26, (y) => 0.6 + 0.6 * THREE.MathUtils.smoothstep(y, 0.0, 0.9));
+}
+
+/** 草むら: 細い三角の葉を 9 枚、外へ少し倒して束ねる。両面を描き、光は上向きの面として当てる */
+function tuftGeometry(): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const col: number[] = [];
+  const nor: number[] = [];
+  const base = new THREE.Color(0x5e9c33);
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 9) * Math.PI * 2 + hash3(i, 1.3, 0.7);
+    const rad = 0.06 + hash3(i, 5.1, 2.2) * 0.16;
+    const h = 0.32 + hash3(i, 9.7, 4.1) * 0.35;
+    const lean = 0.1 + hash3(i, 3.3, 8.8) * 0.2;
+    const w = 0.045;
+    const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
+    const tx = bx + Math.cos(a) * lean, tz = bz + Math.sin(a) * lean;
+    const px = -Math.sin(a) * w, pz = Math.cos(a) * w;
+    pos.push(bx - px, 0, bz - pz, bx + px, 0, bz + pz, tx, h, tz);
+    for (let k = 0; k < 3; k++) {
+      const f = k === 2 ? 1.25 : 0.65;
+      col.push(base.r * f, base.g * f, base.b * f);
+      nor.push(0, 1, 0);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3));
+  return g;
+}
+
 /** 道路標識（丸い規制標識）: 柱・赤い縁・白地・黒い横棒。前面は +z */
 function signGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
@@ -370,6 +414,9 @@ export class Roads {
   private readonly hedgeGeo = hedgeGeometry();
   private readonly signGeo = signGeometry();
   private readonly vendGeo = vendGeometry();
+  private readonly shrubGeo = shrubGeometry();
+  private readonly tuftGeo = tuftGeometry();
+  private readonly tuftMat: THREE.MeshStandardNodeMaterial;
   private readonly signalGeo = signalGeometry();
   private readonly treeMat: THREE.MeshStandardNodeMaterial;
   private readonly metalMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.3, vertexColors: true });
@@ -395,6 +442,8 @@ export class Roads {
     const leafTint: N = mix(vec3(1.18, 1.0, 0.7), vec3(0.85, 1.05, 0.9), tint);
     tm.colorNode = mix(vec3(1, 1, 1), leafTint.mul(leaf), crown);
     this.treeMat = tm;
+    this.tuftMat = tm.clone();
+    this.tuftMat.side = THREE.DoubleSide;
     // 信号: 今の信号の色に合う灯器だけを光らせる
     const sm = new THREE.MeshStandardNodeMaterial({ roughness: 0.5, metalness: 0.2, vertexColors: true });
     const sig: N = attribute("sig", "vec2");
@@ -556,6 +605,18 @@ export class Roads {
       },
       cell: 200,
     }) });
+    this.lods.push({ draw: 240, shadow: 0, meshes: chunkedInstances(this.group, this.shrubGeo, this.treeMat, f.shrubs, (h, m) => {
+      m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale * (0.8 + h.tint * 0.4), h.scale));
+    }, {
+      extra: (g, list) => { g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1)); },
+      cell: 200,
+    }) });
+    this.lods.push({ draw: 160, shadow: 0, meshes: chunkedInstances(this.group, this.tuftGeo, this.tuftMat, f.tufts, (h, m) => {
+      m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale, h.scale));
+    }, {
+      extra: (g, list) => { g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1)); },
+      cell: 160,
+    }) });
     this.lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(this.group, this.signGeo, this.metalMat, f.signs, (p, m) => {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
     }, { cell: 200 }) });
@@ -564,10 +625,10 @@ export class Roads {
     }, { cell: 200 }) });
     const triOf = (g: THREE.BufferGeometry, k: number) => (g.index ? g.index.count : g.getAttribute("position").count) / 3 * k;
     tris += triOf(this.treeGeo, f.trees.length) + triOf(this.lampGeo, f.lamps.length) + triOf(this.signalGeo, f.signals.length)
-      + triOf(this.hedgeGeo, f.hedges.length) + triOf(this.signGeo, f.signs.length) + triOf(this.vendGeo, f.vends.length);
+      + triOf(this.shrubGeo, f.shrubs.length) + triOf(this.tuftGeo, f.tufts.length) + triOf(this.hedgeGeo, f.hedges.length) + triOf(this.signGeo, f.signs.length) + triOf(this.vendGeo, f.vends.length);
     this.stats = { ...this.stats, signals: f.signals.length, trees: f.trees.length, lamps: f.lamps.length, triangles: tris };
     this.log(
-      `道路を表示: 信号 ${f.signals.length} / 街路樹 ${f.trees.length} / 街灯 ${f.lamps.length} / 生け垣 ${f.hedges.length} / 標識 ${f.signs.length} / 自販機 ${f.vends.length} / 三角形 ${(tris / 1e6).toFixed(2)} 百万 / ${(performance.now() - t0).toFixed(0)} ms`,
+      `道路を表示: 信号 ${f.signals.length} / 街路樹 ${f.trees.length} / 街灯 ${f.lamps.length} / 生け垣 ${f.hedges.length} / 低木 ${f.shrubs.length} / 草むら ${f.tufts.length} / 標識 ${f.signs.length} / 自販機 ${f.vends.length} / 三角形 ${(tris / 1e6).toFixed(2)} 百万 / ${(performance.now() - t0).toFixed(0)} ms`,
     );
   }
 }

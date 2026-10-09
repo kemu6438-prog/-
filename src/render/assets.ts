@@ -56,7 +56,7 @@ export class PolyTexture {
       (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        tex.anisotropy = 8;
+        tex.anisotropy = 4;
         tex.generateMipmaps = true;
         tex.minFilter = THREE.LinearMipmapLinearFilter;
         tex.magFilter = THREE.LinearFilter;
@@ -94,14 +94,12 @@ export const TEX = {
   asphalt: new PolyTexture("asphalt_03", 2.05),
   /** 歩道・地面・屋根: コンクリート */
   concrete: new PolyTexture("brushed_concrete_2", 2.5),
-  /** 壁: 打ちっぱなしコンクリート */
-  wall: new PolyTexture("brushed_concrete_04", 2.0),
+  /** 壁: 塗り壁（しっくい）。汚れ・はがれがある */
+  wall: new PolyTexture("painted_plaster_wall", 2.0),
   /** 壁: レンガ */
   brick: new PolyTexture("brick_4", 0.5),
   /** 地面の芝: 青々した芝（2m 四方） */
   grass: new PolyTexture("leafy_grass", 2.0),
-  /** 壁: 塗り壁（しっくい）。汚れ・はがれがある */
-  plaster: new PolyTexture("painted_plaster_wall", 2.0),
   /** 歩道: 敷石 */
   pavers: new PolyTexture("concrete_pavers", 1.92),
 };

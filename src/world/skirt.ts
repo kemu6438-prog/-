@@ -3,7 +3,7 @@
 import type { BufferGeometry } from "three";
 
 /** 建物の足もとを地面の下へ伸ばす長さ（m）。地面は平らな仮のものなので、本当の地面が高い所で建物が浮いて見えるのを隠す */
-export const SKIRT = 9;
+export const SKIRT = 6;
 
 /** 3×3 の逆行列（列優先の 16 要素の行列の左上 3×3 を使う）。逆行列が無ければ null */
 function inv3(e: ArrayLike<number>): number[] | null {

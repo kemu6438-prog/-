@@ -23,6 +23,8 @@ export type Look = {
   /** true の間は影の絵を描き直さない（測定用） */
   freezeShadow(b: boolean): void;
   groundMaterial: THREE.MeshStandardNodeMaterial;
+  /** 太陽の向き（単位ベクトル。街の外の場面の光をそろえる用） */
+  sunDir: THREE.Vector3;
 };
 
 const SKY_RADIUS = 7000;
@@ -134,7 +136,8 @@ export function setupLook(
   };
 
   const buildPipeline = () => {
-    const scenePass = pass(scene, camera);
+    // 後処理の中の場面は、MSAA（なめらか化）を使わない（暗がりの計算が奥行きを読むため）。ギザギザは FXAA でなめらかにする
+    const scenePass = pass(scene, camera, { samples: 0 });
     scenePass.setMRT(mrt({ output, normal: normalView }));
     const col: N = scenePass.getTextureNode("output");
     const nor: N = scenePass.getTextureNode("normal");
@@ -240,5 +243,6 @@ export function setupLook(
     setOptions,
     freezeShadow: (b: boolean) => { shadowFrozen = b; },
     groundMaterial,
+    sunDir,
   } as Look;
 }
