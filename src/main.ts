@@ -2,7 +2,7 @@
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
 /** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
-const BUILD_ID = "15";
+const BUILD_ID = "16";
 import * as THREE from "three/webgpu";
 import { setupLook } from "./render/look";
 import { LocalFrame } from "./core/geo";
@@ -101,7 +101,7 @@ async function main() {
 
   // 道路・歩道・街路樹など（?roads=0 で出さない）
   const roads = new Roads(log);
-  roads.radius = isMobile ? 1200 : 1500;
+  roads.radius = isMobile ? 800 : 1100; // 道の面は 1 km より遠いと、ほとんど建物の陰で見えない。重さの割に見返りが少ない
   roads.treeRadius = isMobile ? 450 : 700;
   scene.add(roads.group);
   const roadsOn = new URLSearchParams(location.search).get("roads") !== "0";

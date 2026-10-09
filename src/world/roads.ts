@@ -261,12 +261,13 @@ function chunkedInstances<T extends { x: number; z: number }>(
   mat: THREE.Material,
   items: T[],
   place: (it: T, m: THREE.Matrix4) => void,
-  opts: { nudge?: number; byScale?: boolean; cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number; receive?: boolean; margin?: number } = {},
+  opts: { nudge?: number; byScale?: boolean; cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number; receive?: boolean; margin?: number; origin?: [number, number] } = {},
 ) {
   const cell = opts.cell ?? 250;
+  const [ox, oz] = opts.origin ?? [0, 0];
   const bins = new Map<string, T[]>();
   for (const it of items) {
-    const k = `${Math.floor(it.x / cell)},${Math.floor(it.z / cell)}`;
+    const k = `${Math.floor((it.x - ox) / cell)},${Math.floor((it.z - oz) / cell)}`;
     let a = bins.get(k);
     if (!a) bins.set(k, (a = []));
     a.push(it);
@@ -275,8 +276,9 @@ function chunkedInstances<T extends { x: number; z: number }>(
   const c = new THREE.Color();
   const made: THREE.InstancedMesh[] = [];
   for (const list of bins.values()) {
-    const g = geom.clone();
-    opts.extra?.(g, list);
+    // 個別の属性（葉の色むら）がなければ、形は全部の塊で共有する（GPU の buffer を塊ごとに作ると、読み込みの瞬間に引っかかる）
+    let g = geom;
+    if (opts.extra) { g = geom.clone(); opts.extra(g, list); } else geom.userData.shared = true;
     const mesh = new THREE.InstancedMesh(g, mat, list.length);
     for (let i = 0; i < list.length; i++) {
       place(list[i], m);
@@ -371,6 +373,10 @@ export class Roads {
   private linesDirty = false;
   /** 運転が、あとから増えた道を受け取るための列 */
   private newLines: RoadLine[] = [];
+  /** 作ってからすぐには表示せず、1 コマに少しずつ表示する（初めて描くときに GPU へ送る処理が、1 コマに集中しないように） */
+  private revealQ: THREE.Object3D[] = [];
+  /** 道の面と木などの塊の数（確認用） */
+  meshCount = 0;
 
   constructor(private readonly log: (m: string) => void, private readonly tileUrlOf?: (z: number, x: number, y: number) => string) {
     this.group.name = "roads";
@@ -429,7 +435,7 @@ export class Roads {
       const b = m.boundingSphere;
       if (!b) continue;
       const d = Math.hypot(b.center.x - cam.x, b.center.z - cam.z) - b.radius;
-      m.visible = !this.hideInstanced && d < l.draw;
+      m.visible = m.userData.live === true && !this.hideInstanced && d < l.draw;
       if (l.shadow > 0) m.castShadow = d < l.shadow;
     }
   }
@@ -491,7 +497,7 @@ export class Roads {
     g.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
-      mesh.geometry.dispose();
+      if (!mesh.geometry.userData.shared) mesh.geometry.dispose();
       (mesh as unknown as THREE.InstancedMesh).dispose?.();
     });
   }
@@ -539,7 +545,7 @@ export class Roads {
   /** 毎コマ呼ぶ（中で間引く）。カメラの近くのタイルを読み込み、1 コマに 1 つだけ作る */
   update(cam: THREE.Vector3, now: number) {
     if (!this.frame) return;
-    if (now - this.lastPlan > 400) { this.lastPlan = now; this.plan(cam, now); }
+    if (now - this.lastPlan > 2500) { this.lastPlan = now; this.plan(cam, now); }
     this.buildOne(cam);
   }
 
@@ -607,11 +613,21 @@ export class Roads {
   private refreshStats() {
     let lines = 0, nodes = 0, trees = 0, lamps = 0, tris = 0;
     for (const t of this.tiles.values()) { lines += t.lines.length; nodes += t.nodes.length; trees += t.trees; lamps += t.lamps; tris += t.tris; }
+    let mc = 0;
+    for (const t of this.tiles.values()) { mc += t.group.children.length; for (const l of t.lods) mc += l.meshes.length; }
+    this.meshCount = mc;
     this.stats = { tiles: this.tiles.size, failedTiles: this.failed, lines, nodes, trees, lamps, triangles: tris };
   }
 
   /** 1 コマに 1 つだけ、重い作業をする: ① 届いたタイルを道の面にする ② 近いタイルに木などを置く ③ 遠くの木などを捨てる */
   private buildOne(cam: THREE.Vector3) {
+    // 表示待ちの物が溜まっているうちは、新しく作らない（作る速さを、表示する速さに合わせる）
+    for (let i = 0; i < 6 && this.revealQ.length > 0; i++) {
+      const o = this.revealQ.shift()!;
+      o.userData.live = true;
+      if (o.userData.ribbon) o.visible = true;
+    }
+    if (this.revealQ.length > 12) return;
     if (this.readyQ.length > 0) {
       let bi = -1, bd = Infinity;
       for (let i = 0; i < this.readyQ.length; i++) {
@@ -678,6 +694,9 @@ export class Roads {
       mesh.receiveShadow = true;
       mesh.frustumCulled = true;
       mesh.renderOrder = ord;
+      mesh.visible = false;
+      mesh.userData.ribbon = true;
+      this.revealQ.push(mesh);
       group.add(mesh);
       tris += rb.index.length / 3;
     };
@@ -697,7 +716,7 @@ export class Roads {
     const now = performance.now();
     if (now - this.lastLog > 4000 && this.readyQ.length === 0 && this.pending === 0) {
       this.lastLog = now;
-      this.log(`道路データ: タイル ${this.tiles.size} 枚 / 道 ${this.stats.lines} 本 / 交差点 ${this.stats.nodes}（失敗 ${this.failed}）`);
+      this.log(`道路データ: タイル ${this.tiles.size} 枚 / 道 ${this.stats.lines} 本 / 交差点 ${this.stats.nodes} / 道の三角形 ${(this.stats.triangles / 1000).toFixed(0)} 千 / 描く塊 ${this.meshCount}（失敗 ${this.failed}）`);
     }
   }
 
@@ -711,6 +730,7 @@ export class Roads {
     const fg = new THREE.Group();
     fg.name = `road-furniture-${t.key}`;
     const lods: Lod[] = [];
+    const origin: [number, number] = [t.cx, t.cz]; // 塊の区切りはタイルの中心から（タイルをまたぐ小さな塊が増えないように）
     const Y = new THREE.Vector3(0, 1, 0);
     const placeTree = (tr: TreeInst, m: THREE.Matrix4) => {
       m.compose(new THREE.Vector3(tr.x, 0, tr.z), new THREE.Quaternion().setFromAxisAngle(Y, tr.rot), new THREE.Vector3(tr.scale, tr.scale * (0.9 + tr.tint * 0.25), tr.scale));
@@ -722,28 +742,28 @@ export class Roads {
     const treeMeshes: THREE.InstancedMesh[] = [];
     for (const [geo, pick] of [[this.treeGeoA, (x: TreeInst) => x.tint < 0.5], [this.treeGeoB, (x: TreeInst) => x.tint >= 0.5]] as const) {
       treeMeshes.push(...chunkedInstances(fg, geo, this.cardMat, f.trees.filter(pick), placeTree, {
-        cast: true, margin: 2.4, byScale: true, nudge: 1.4, receive: false, extra: tintAttr,
+        origin, cast: true, margin: 2.4, byScale: true, nudge: 1.4, receive: false, extra: tintAttr,
       }));
     }
     lods.push({ draw: this.treeDraw, shadow: 220, meshes: treeMeshes });
     lods.push({ draw: 350, shadow: 0, meshes: chunkedInstances(fg, this.lampGeo, this.metalMat, f.lamps, (l, m) => {
       m.compose(new THREE.Vector3(l.x, 0, l.z), new THREE.Quaternion().setFromAxisAngle(Y, l.rot), new THREE.Vector3(1, 1, 1));
-    }, { margin: 0.2 }) });
+    }, { origin, margin: 0.2 }) });
     lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(fg, this.hedgeGeo, this.treeMat, f.hedges, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, 0.85 + h.tint * 0.4, 1));
-    }, { extra: tintAttr, cell: 200, margin: 0.6 }) });
+    }, { origin, extra: tintAttr, cell: 250, margin: 0.6 }) });
     lods.push({ draw: 240, shadow: 0, meshes: chunkedInstances(fg, this.shrubGeo, this.cardMat, f.shrubs, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale * (0.8 + h.tint * 0.4), h.scale));
-    }, { extra: tintAttr, cell: 200, receive: false, margin: 0.8, nudge: 1.4 }) });
+    }, { origin, extra: tintAttr, cell: 250, receive: false, margin: 0.8, nudge: 1.4 }) });
     lods.push({ draw: 170, shadow: 0, meshes: chunkedInstances(fg, this.tuftGeo, this.cardMat, f.tufts, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale, h.scale));
-    }, { extra: tintAttr, cell: 160, receive: false, margin: 0.3, nudge: 1.0 }) });
+    }, { origin, extra: tintAttr, cell: 250, receive: false, margin: 0.3, nudge: 1.0 }) });
     lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(fg, this.signGeo, this.metalMat, f.signs, (p, m) => {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
-    }, { cell: 200, margin: 0.2 }) });
+    }, { origin, cell: 250, margin: 0.2 }) });
     lods.push({ draw: 200, shadow: 0, meshes: chunkedInstances(fg, this.vendGeo, this.metalMat, f.vends, (p, m) => {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
-    }, { cell: 200, margin: 0 }) });
+    }, { origin, cell: 250, margin: 0 }) });
     const triOf = (g: THREE.BufferGeometry, k: number) => (g.index ? g.index.count : g.getAttribute("position").count) / 3 * k;
     t.tris = t.tris + triOf(this.treeGeoA, f.trees.length) + triOf(this.lampGeo, f.lamps.length)
       + triOf(this.shrubGeo, f.shrubs.length) + triOf(this.tuftGeo, f.tufts.length) + triOf(this.hedgeGeo, f.hedges.length) + triOf(this.signGeo, f.signs.length) + triOf(this.vendGeo, f.vends.length);
@@ -751,6 +771,7 @@ export class Roads {
     t.lamps = f.lamps.length;
     t.fgroup = fg;
     t.lods = lods;
+    for (const l of lods) for (const m of l.meshes) this.revealQ.push(m);
     this.group.add(fg);
     this.flatDirty = true;
     this.refreshStats();
