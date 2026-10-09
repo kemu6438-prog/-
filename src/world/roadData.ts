@@ -191,10 +191,3 @@ export function analyzeNodes(lines: RoadLine[]): RoadNode[] {
   }
   return nodes;
 }
-
-/** 信号を付ける交差点か（太い道が交わり、ほかにもそれなりの道がある所） */
-export function needsSignal(node: RoadNode): boolean {
-  if (node.maxRank < 3) return false;
-  const big = node.arms.filter((a) => a.line.rank >= 2).length;
-  return big >= 3;
-}

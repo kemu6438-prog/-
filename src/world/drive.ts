@@ -1,16 +1,16 @@
 // 自動運転で道路を走る「車に乗るモード」の動き（計算だけ。画面や three.js には依存しない）。
 //  - 左側通行。道の中心線から少し左の車線を走る
 //  - 道の折れ曲がりはなめらかな曲線に直して、曲がり角はカーブの強さに応じて減速する
-//  - 信号のある交差点では停止線で止まる（赤・黄）。青で発進
+//  - 信号は無い（廃止）。交差点は減速して通り抜ける
 //  - 交差点では、まっすぐを優先しつつ、ときどき曲がる。行き止まりではＵターンする
-//  - 速さは道の幅の区分ごとの「仮の制限速度」（実際の制限速度のデータは無いため）
-import { analyzeNodes, halfRoad, needsSignal, type RoadLine, type RoadNode } from "./roadData";
-import { nodePhase } from "./roadFurniture";
-import { signalState } from "./signal";
+//  - 制限速度は一律 60 km/h。実際に出す速さは道の幅で決める（広い道 約 50 / 中くらい 約 45 / 狭い道 約 40 km/h。カーブ・曲がり角ではさらに減速）
+import { analyzeNodes, halfRoad, type RoadLine, type RoadNode } from "./roadData";
 
-/** 道の幅の区分ごとの制限速度（km/h）。実データが入るまでの仮の値 */
-export const LIMIT_KMH = [30, 30, 40, 50, 60];
-const ACCEL = 1.7; // m/s²
+/** 制限速度（km/h）。一律（画面に表示する値） */
+export const SPEED_LIMIT_KMH = 60;
+/** 道の幅の区分ごとの、実際に出す速さ（km/h） */
+export const CRUISE_KMH = [40, 40, 45, 50, 50];
+const ACCEL = 2.0; // m/s²
 const DECEL = 1.3; // ふつうのブレーキ（先読みの計算に使う）
 const DECEL_MAX = 3.8; // これより強くは止まれない
 const JERK = 2.6; // 加速度の変わり方（m/s³）。小さいほど、ゆったり
@@ -133,8 +133,6 @@ type Piece = {
   len: number;
   /** 道の区分で決まる速さの上限（m/s） */
   limit: number;
-  /** この部品の終わり（停止線）で守る信号 */
-  signal?: { phase: number; axis: number };
   /** kind が line のときだけ: どの道を、どちら向きに走るか */
   line?: RoadLine;
   dir?: 1 | -1;
@@ -159,7 +157,6 @@ function rayCross(a: Pose, b: Pose, maxT: number): (V2 & { t: number; w: number 
 }
 
 /** 交差点の手前の止まる位置 / 通り抜けるときの余白（交差点の縁から、車の中心まで） */
-const MARGIN_SIGNAL = 7.4;
 const MARGIN_PLAIN = 3.2;
 
 export class Driver {
@@ -170,12 +167,9 @@ export class Driver {
   private cur: Piece | null = null;
   private queue: Piece[] = [];
   private u = 0;
-  /** 青のまま通り抜けると決めた信号の部品 */
-  private committed: Piece | null = null;
   speed = 0;
   private acc = 0;
   /** 画面表示用 */
-  waiting = false;
   limitKmh = 0;
   pose: Pose = { x: 0, z: 0, hx: 0, hz: -1 };
   /** なめらかにした車の向き（カメラの yaw と同じ約束: 前 = (-sin, -cos)） */
@@ -211,9 +205,9 @@ export class Driver {
   }
 
   /** 道の端から、どれだけ手前で止まる・曲がり始めるか（交差点の縁から車の中心まで）。交差点でなくても、他の道とつながる端では余白を取る */
-  private endMargin(line: RoadLine, atStart: boolean, signal: boolean): number {
+  private endMargin(line: RoadLine, atStart: boolean): number {
     const shift = atStart ? line.startShift : line.endShift;
-    if (shift >= 0) return shift + (signal ? MARGIN_SIGNAL : MARGIN_PLAIN);
+    if (shift >= 0) return shift + MARGIN_PLAIN;
     const pts = this.rawLines.get(line)!;
     const p = atStart ? pts[0] : pts[pts.length - 1];
     const others = (this.ends.get(key(p.x, p.z)) ?? []).length > 1;
@@ -260,20 +254,11 @@ export class Driver {
     const scale = path.len / L;
     const dFrom = dir === 1 ? sFrom : L - sFrom;
     const towardStart = dir === -1; // 進む先が始点側か
-    const shift = towardStart ? line.startShift : line.endShift;
-    const nodeId = towardStart ? line.startNode : line.endNode;
-    const node = nodeId >= 0 ? this.nodeById.get(nodeId) : undefined;
-    const hasSignal = !!node && needsSignal(node) && line.rank >= 2 && line.length >= 22;
-    const margin = this.endMargin(line, towardStart, hasSignal);
+    const margin = this.endMargin(line, towardStart);
     const dTo = Math.max(dFrom, L - Math.min(margin, L * 0.45));
-    let signal: Piece["signal"];
-    if (hasSignal && node) {
-      const arm = node.arms.find((a) => a.line === line && a.atStart === towardStart);
-      if (arm) signal = { phase: nodePhase(node.id), axis: Math.abs(arm.ax) > Math.abs(arm.az) ? 1 : 0 };
-    }
     const from = Math.min(dFrom * scale, path.len);
     const to = Math.max(from, Math.min(dTo * scale, path.len));
-    return { kind: "line", path, from, len: to - from, limit: LIMIT_KMH[Math.max(0, Math.min(4, line.rank))] / 3.6, signal, line, dir };
+    return { kind: "line", path, from, len: to - from, limit: CRUISE_KMH[Math.max(0, Math.min(4, line.rank))] / 3.6, line, dir };
   }
 
   /** 指定の場所に近い、ある程度太い道の上から出発する。出発できたら true */
@@ -312,7 +297,6 @@ export class Driver {
     this.u = 0;
     this.speed = 0;
     this.acc = 0;
-    this.committed = null;
     this.pose = pieceAt(this.cur, 0);
     this.yaw = Math.atan2(-this.pose.hx, -this.pose.hz);
     this.yawInit = true;
@@ -372,10 +356,7 @@ export class Driver {
     }
     // 次の道は、出口側の交差点の分だけ内側から走り始める
     const shiftIn = fromStart ? nl.startShift : nl.endShift;
-    const nodeId = fromStart ? nl.startNode : nl.endNode;
-    const node = nodeId >= 0 ? this.nodeById.get(nodeId) : undefined;
-    const sig = !!node && needsSignal(node) && nl.rank >= 2 && nl.length >= 22;
-    const skip = Math.min(this.endMargin(nl, fromStart, sig), nl.length * 0.45);
+    const skip = Math.min(this.endMargin(nl, fromStart), nl.length * 0.45);
     const lp = this.linePiece(nl, ndir, fromStart ? skip : nl.length - skip);
     const start = pieceAt(lp, 0);
 
@@ -470,34 +451,17 @@ export class Driver {
     }
   }
 
-  /** dt: 秒, t: 信号の時計（秒。画面の信号と同じ値） */
-  update(dt: number, t: number) {
+  /** dt: 秒 */
+  update(dt: number) {
     const cur = this.cur;
     if (!cur) return;
     dt = Math.min(dt, 0.1);
-    const dist = cur.len - this.u;
-    let mustStop = false;
-    if (cur.signal) {
-      const st = signalState(t, cur.signal.phase, cur.signal.axis);
-      const canStop = dist > (this.speed * this.speed) / (2 * DECEL_MAX) - 0.6;
-      if (st !== 0 && canStop) mustStop = true;
-      // 青のとき: 着くまでに赤になりそうなら、早めにゆるやかに止まる準備をする。間に合うなら、そのまま通り抜ける
-      if (st === 0 && dist < 130 && this.committed !== cur) {
-        let tg = 40;
-        for (let k = 0.5; k <= 40; k += 0.5) {
-          if (signalState(t + k, cur.signal.phase, cur.signal.axis) !== 0) { tg = k; break; }
-        }
-        const ta = dist / Math.max(this.speed * 0.9, 2.5);
-        if (ta > tg - 1.0) mustStop = true; else this.committed = cur;
-      }
-    }
-    // 先読み: これから先のカーブ・停止位置で守れる速さ
+    // 先読み: これから先のカーブで守れる速さ
     const horizon = Math.min(120, (this.speed * this.speed) / (2 * DECEL) + 14);
     let allowed = pieceLim(cur, this.u);
     for (let d = 3; d <= horizon; d += 3) {
       allowed = Math.min(allowed, Math.sqrt(this.limitAhead(d) ** 2 + 2 * DECEL * d));
     }
-    if (mustStop) allowed = Math.min(allowed, Math.sqrt(2 * 1.35 * Math.max(0, dist - 1.0)));
     // 目標へ向かう加速度を、急に変わらないようにして速さを決める
     const wanted = Math.max(-DECEL_MAX, Math.min(ACCEL, (allowed - this.speed) * 2.5));
     const dj = JERK * dt;
@@ -505,13 +469,9 @@ export class Driver {
     this.speed = Math.max(0, this.speed + this.acc * dt);
     if (this.speed > cur.limit) this.speed = Math.max(cur.limit, this.speed - DECEL_MAX * dt);
     if (this.speed > allowed + 0.4) this.speed = Math.max(allowed + 0.4, this.speed - DECEL_MAX * dt);
-    if (mustStop && this.speed < 0.08 && dist < 1.0) { this.speed = 0; this.acc = 0; }
-    this.waiting = mustStop && this.speed < 0.3 && dist < 4;
-    this.limitKmh = Math.round(pieceLim(cur, this.u) * 3.6);
-    if (cur.kind === "turn") this.limitKmh = Math.round(Math.min(cur.limit, cur.path.limAt(cur.from + this.u)) * 3.6);
+    this.limitKmh = SPEED_LIMIT_KMH;
 
     this.u += this.speed * dt;
-    if (mustStop && this.u > cur.len - 0.15) { this.u = cur.len - 0.15; this.speed = 0; this.acc = 0; }
     let guard = 0;
     while (this.cur && this.u >= this.cur.len && this.queue.length > 0 && guard++ < 4) {
       this.u -= this.cur.len;

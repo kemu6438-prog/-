@@ -72,10 +72,20 @@ function buildLook(idRaw: N): Out {
   // 高層ビルのいちばん上のほう（100m〜220m）は、さらに少し簡単にする（完全には消さず、窓がうっすら残る）
   const topFlat: N = smoothstep(100.0, 220.0, y);
   const simple: N = clamp(upper.mul(0.7).add(topFlat.mul(0.3)), 0.0, 1.0);
-  const fp0: N = max(pw.div(bayW), pw.div(floorH)).max(0.0005);
+  // 1 画素ぶんの大きさ（マス 1 つに対する割合）を、横と縦で別々に求める。斜めから見ても縦方向はくっきり、横方向だけぼかす。
+  // 画面上の変化量（dFdx）が使えない面の境目の画素では値が暴れるので、計算で求めた上限（pw）で抑える
+  const fpU: N = min((abs(dFdx(u)) as N).add(abs(dFdy(u)) as N), pw.div(bayW)).max(0.0005);
+  const fpV: N = min((abs(dFdx(v)) as N).add(abs(dFdy(v)) as N), pw.div(floorH)).max(0.0005);
+  const fp0: N = max(fpU, fpV);
   // 簡単にするぶん、1 ピクセルが大きいことにして、窓が平らな色にとけるようにする
   const fp: N = fp0.add(simple.mul(0.11));
+  const fpUs: N = fpU.add(simple.mul(0.11));
+  const fpVs: N = fpV.add(simple.mul(0.11));
   const edge = (e: N, x: N): N => smoothstep(e.sub(fp), e.add(fp), x);
+  const edgeU = (e: N, x: N): N => smoothstep(e.sub(fpUs), e.add(fpUs), x);
+  const edgeV = (e: N, x: N): N => smoothstep(e.sub(fpVs), e.add(fpVs), x);
+  // 壁の凹凸（光の当たり方）は、画面の変化量から作るので、遠くでは粗くなってちかちかする。かなり近いときだけ効かせる
+  const bumpK: N = float(1.0).sub(smoothstep(0.005, 0.016, fp));
   const far: N = smoothstep(0.05, 0.17, fp);
   const near: N = float(1.0).sub(smoothstep(0.03, 0.12, fp));
   // 細い枠・桟は、1 ピクセルより細くなったらすぐ消す（白いちらつきの原因）
@@ -95,10 +105,10 @@ function buildLook(idRaw: N): Out {
   const r: N = mix(r0, float(0.93), shop);
   const b: N = mix(b0, float(0.12), shop);
   const t: N = mix(t0, float(0.68), shop);
-  const win: N = edge(l, fu).mul(float(1.0).sub(edge(r, fu))).mul(edge(b, fv)).mul(float(1.0).sub(edge(t, fv)));
+  const win: N = edgeU(l, fu).mul(float(1.0).sub(edgeU(r, fu))).mul(edgeV(b, fv)).mul(float(1.0).sub(edgeV(t, fv)));
   // 連続窓・カーテンウォールの縦の桟（細い線）
   const isBand: N = step(0.5, s).mul(step(s, 2.5));
-  const mull: N = float(1.0).sub(isBand.mul(float(1.0).sub(edge(float(0.06), fu)).mul(crisp).mul(0.9)));
+  const mull: N = float(1.0).sub(isBand.mul(float(1.0).sub(edgeU(float(0.06), fu)).mul(crisp).mul(0.9)));
   // --- 窓の数を減らす: ふつうの壁の柱（階段室など）と、窓のないマス ---
   const isCW: N = step(1.5, s).mul(step(s, 2.5));
   const iu: N = floor(u);
@@ -113,10 +123,10 @@ function buildLook(idRaw: N): Out {
   const shopOpen: N = step(0.3, hash(colId.add(h1.mul(59.0)).add(11.0)));
   const openCell: N = max(float(1.0).sub(solidCol).mul(float(1.0).sub(blank)), shop.mul(shopOpen));
   const winM: N = win.mul(mull).mul(openCell);
-  const outer: N = edge(l.sub(0.035), fu)
-    .mul(float(1.0).sub(edge(r.add(0.035), fu)))
-    .mul(edge(b.sub(0.03), fv))
-    .mul(float(1.0).sub(edge(t.add(0.03), fv)));
+  const outer: N = edgeU(l.sub(0.035), fu)
+    .mul(float(1.0).sub(edgeU(r.add(0.035), fu)))
+    .mul(edgeV(b.sub(0.03), fv))
+    .mul(float(1.0).sub(edgeV(t.add(0.03), fv)));
   const frame: N = clamp(outer.sub(win), 0.0, 1.0).add(float(1.0).sub(mull).mul(win)).mul(crisp).mul(openCell);
   const hasWindows: N = step(0.06, h3);
 
@@ -165,7 +175,7 @@ function buildLook(idRaw: N): Out {
 
   // 壁のむら・汚れ
   const surf: N = mix(vec2(positionWorld.x, positionWorld.z), vec2(uMeters, y), wallMask);
-  const mott: N = vnoise(surf.mul(0.3)).mul(0.5).add(vnoise(surf.mul(1.3)).mul(0.3)).add(vnoise(surf.mul(6.0)).mul(0.2).mul(near));
+  const mott: N = vnoise(surf.mul(0.3)).mul(0.5).add(vnoise(surf.mul(1.3)).mul(0.3)).add(vnoise(surf.mul(6.0)).mul(0.2).mul(close));
   const mottle: N = float(0.86).add(mott.mul(0.28).mul(float(1.0).sub(simple.mul(0.7))));
   const streak: N = vnoise(vec2(uMeters.mul(1.5), floor(v).mul(3.1))).mul(float(1.0).sub(fv)).mul(0.2).mul(near).mul(wallMask);
 
@@ -181,14 +191,14 @@ function buildLook(idRaw: N): Out {
 
   // 集合住宅: ベランダ（手すりと床の出っぱり）と、縦縞の色パネル
   const isDwell: N = step(2.5, s).mul(step(s, 3.5));
-  const rail: N = isDwell.mul(float(1.0).sub(edge(float(0.24), fv))).mul(edge(float(0.05), fv)).mul(near);
-  const slabLine: N = isDwell.mul(float(1.0).sub(edge(float(0.05), fv))).mul(near);
+  const rail: N = isDwell.mul(float(1.0).sub(edgeV(float(0.24), fv))).mul(edgeV(float(0.05), fv)).mul(near);
+  const slabLine: N = isDwell.mul(float(1.0).sub(edgeV(float(0.05), fv))).mul(near);
   const panel: N = isDwell.mul(step(0.5, fract(floor(u).mul(0.5).add(h2)))).mul(0.12);
 
   // 床の継ぎ目・ひさし・窓の下の影
-  const slab: N = float(1.0).sub(float(1.0).sub(edge(float(0.07), fv)).mul(0.16).mul(near));
-  const sill: N = float(1.0).sub(edge(float(0.3), fv).mul(float(1.0).sub(edge(float(0.36), fv))).mul(0.22).mul(near).mul(float(1.0).sub(isDwell)));
-  const cornice: N = float(1.0).add(edge(float(0.93), fv).mul(0.07).mul(near));
+  const slab: N = float(1.0).sub(float(1.0).sub(edgeV(float(0.07), fv)).mul(0.16).mul(near));
+  const sill: N = float(1.0).sub(edgeV(float(0.3), fv).mul(float(1.0).sub(edgeV(float(0.36), fv))).mul(0.22).mul(near).mul(float(1.0).sub(isDwell)));
+  const cornice: N = float(1.0).add(edgeV(float(0.93), fv).mul(0.07).mul(near));
   const grounded: N = mix(float(0.7), float(1.0), smoothstep(0.0, 14.0, y));
 
   // ネットの素材（読み込めたら）: 壁・屋根はコンクリートの肌、レンガの壁は本物のレンガ模様
@@ -207,7 +217,7 @@ function buildLook(idRaw: N): Out {
   wallBody = mix(wallBody, sash, frame.mul(hasWindows).mul(0.6).mul(step(s, 1.5).max(step(2.5, s)).max(0.4)));
 
   // 1 階の看板と、ひさし
-  const signBand: N = shop.mul(edge(float(0.76), fv)).mul(float(1.0).sub(edge(float(0.97), fv)));
+  const signBand: N = shop.mul(edgeV(float(0.76), fv)).mul(float(1.0).sub(edgeV(float(0.97), fv)));
   const signId: N = floor(uMeters.div(5.0)).add(h1.mul(31.0));
   const sh: N = hash(signId);
   const signCol: N = mix(mix(vec3(0.85, 0.15, 0.15), vec3(0.95, 0.8, 0.15), step(0.33, sh)), mix(vec3(0.15, 0.4, 0.8), vec3(0.2, 0.55, 0.35), step(0.8, sh)), step(0.66, sh));
@@ -216,7 +226,7 @@ function buildLook(idRaw: N): Out {
   const signColor: N = mix(signCol, vec3(0.97, 0.97, 0.95), letters.mul(0.55));
   wallBody = mix(wallBody, signColor, signBand.mul(hasSign).mul(near).mul(float(1.0).sub(step(1.5, s).mul(step(s, 2.5)))));
   const awningColor: N = mix(vec3(0.75, 0.3, 0.28), vec3(0.28, 0.5, 0.45), step(0.5, h1));
-  const awning: N = shop.mul(edge(float(0.68), fv)).mul(float(1.0).sub(edge(float(0.76), fv))).mul(step(0.45, h2));
+  const awning: N = shop.mul(edgeV(float(0.68), fv)).mul(float(1.0).sub(edgeV(float(0.76), fv))).mul(step(0.45, h2));
   wallBody = mix(wallBody, awningColor, awning.mul(near));
 
   // 2〜3 階あたりの縦型の突き出し看板（ときどき）
@@ -234,17 +244,17 @@ function buildLook(idRaw: N): Out {
   // 縦の配管（ときどき）
   const pipeCol: N = step(0.8, hash(colId.add(h1.mul(91.0))));
   const crispP: N = float(1.0).sub(smoothstep(0.02, 0.09, fp));
-  const pipe: N = float(1.0).sub(edge(float(0.018), dpx)).mul(pipeCol).mul(notBand).mul(crispP).mul(wallMask);
+  const pipe: N = float(1.0).sub(edgeU(float(0.018), dpx)).mul(pipeCol).mul(notBand).mul(crispP).mul(wallMask);
   wallBody = mix(wallBody, vec3(0.3, 0.31, 0.33).mul(mix(float(0.8), float(1.2), step(0.5, fu))), pipe.mul(0.9));
   // 柱型（縦のでっぱり）: 左は明るく、右は影
   const ribOn: N = step(0.45, h1).mul(step(s, 0.5).max(step(3.5, s)));
-  const ribW: N = float(1.0).sub(edge(float(0.07), dpx));
-  const ribLine: N = float(1.0).sub(edge(float(0.012), dpx));
+  const ribW: N = float(1.0).sub(edgeU(float(0.07), dpx));
+  const ribLine: N = float(1.0).sub(edgeU(float(0.012), dpx));
   const ribK: N = ribOn.mul(near).mul(wallMask).mul(notBand);
   wallBody = wallBody.mul(float(1.0).add(ribW.mul(ribK).mul(float(0.12).sub(step(0.5, fu).mul(0.2))))).mul(float(1.0).sub(ribLine.mul(ribK).mul(0.25)));
   // エアコンの室外機（ときどき）
   const acOn: N = step(0.9, hash21(vec2(iu, floor(v)).add(vec2(h3.mul(43.0).add(5.0), h1.mul(71.0).add(1.0))))).mul(openCell).mul(float(1.0).sub(isGround)).mul(notBand);
-  const acBox: N = edge(float(0.56), fu).mul(float(1.0).sub(edge(float(0.86), fu))).mul(edge(float(0.03), fv)).mul(float(1.0).sub(edge(float(0.2), fv)));
+  const acBox: N = edgeU(float(0.56), fu).mul(float(1.0).sub(edgeU(float(0.86), fu))).mul(edgeV(float(0.03), fv)).mul(float(1.0).sub(edgeV(float(0.2), fv)));
   const fan: N = float(1.0).sub(smoothstep(0.65, 0.95, length(vec2(fu.sub(0.71).div(0.12), fv.sub(0.115).div(0.06)))));
   wallBody = mix(wallBody, mix(vec3(0.82, 0.83, 0.84), vec3(0.2, 0.21, 0.22), fan), acOn.mul(acBox).mul(near).mul(wallMask));
   // 外壁パネルの目地（事務所・連続窓の建物）
@@ -260,7 +270,7 @@ function buildLook(idRaw: N): Out {
   const wallColor: N = mix(mix(wallBody, glassColor, winAmount), shutterCol, shutter).mul(grounded);
 
   // --- 壁の凹凸（光の当たり方だけで見せる: 窓のへこみ・柱型・床のでっぱり・配管・室外機・波板） ---
-  const slabLedge: N = float(1.0).sub(edge(float(0.06), fv)).mul(float(1.0).sub(isCW)).mul(notBand);
+  const slabLedge: N = float(1.0).sub(edgeV(float(0.06), fv)).mul(float(1.0).sub(isCW)).mul(notBand);
   const plinth: N = smoothstep(0.7, 0.4, y);
   const hgt: N = ribW.mul(ribK).mul(0.1)
     .sub(winAmount.mul(0.12))
@@ -269,9 +279,7 @@ function buildLook(idRaw: N): Out {
     .add(acOn.mul(acBox).mul(0.25))
     .add(plinth.mul(0.05))
     .add(shutter.mul(abs(fract(uMeters.mul(8.0)).sub(0.5)).mul(0.03)))
-    .add(concreteD.g.sub(1.0).mul(0.03).mul(close))
-    .sub(max(jointU, jointV).mul(0.01).mul(close))
-    .mul(near).mul(wallMask);
+    .mul(bumpK).mul(wallMask);
   const sX: N = dFdx(pv) as N;
   const sY: N = dFdy(pv) as N;
   const r1: N = cross(sY, faceV);
@@ -279,7 +287,7 @@ function buildLook(idRaw: N): Out {
   const det: N = dot(sX, r1);
   const grad: N = sign(det).mul((dFdx(hgt) as N).mul(r1).add((dFdy(hgt) as N).mul(r2)));
   const bumped: N = normalize(abs(det).mul(faceV).sub(grad.mul(1.5)));
-  const normal: N = normalize(mix(faceV, bumped, near.mul(wallMask)) as N);
+  const normal: N = normalize(mix(faceV, bumped, bumpK.mul(wallMask)) as N);
 
   // --- 屋根 ---
   const roofGrey: N = mix(vec3(0.5, 0.52, 0.54), vec3(0.45, 0.53, 0.48), step(0.55, h2));

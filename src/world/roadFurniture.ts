@@ -1,12 +1,11 @@
-// 道ばたの物（街路樹・街灯・信号）をどこに置くかを決める。純粋な計算（単体テストできる）。
-import { SIDEWALK_WIDTH, halfRoad, needsSignal, type RoadLine, type RoadNode } from "./roadData";
+// 道ばたの物（街路樹・街灯・生け垣など。信号は廃止）をどこに置くかを決める。純粋な計算（単体テストできる）。
+import { SIDEWALK_WIDTH, halfRoad, type RoadLine, type RoadNode } from "./roadData";
 
 export type TreeInst = { x: number; z: number; rot: number; scale: number; tint: number };
 export type LampInst = { x: number; z: number; rot: number };
-export type SignalInst = { x: number; z: number; rot: number; phase: number; axis: number; reach: number };
 /** 生け垣・標識・自動販売機など、向きと大きさだけを持つ小物 */
 export type PropInst = { x: number; z: number; rot: number; scale: number; tint: number };
-export type Furniture = { trees: TreeInst[]; lamps: LampInst[]; signals: SignalInst[]; hedges: PropInst[]; signs: PropInst[]; vends: PropInst[]; shrubs: PropInst[]; tufts: PropInst[] };
+export type Furniture = { trees: TreeInst[]; lamps: LampInst[]; hedges: PropInst[]; signs: PropInst[]; vends: PropInst[]; shrubs: PropInst[]; tufts: PropInst[] };
 
 function rng(seed: number) {
   let a = (seed * 2654435761) >>> 0;
@@ -18,9 +17,6 @@ function rng(seed: number) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-
-/** 交差点ごとの信号の位相（秒）。車の動き（drive.ts）も同じ値を使う */
-export const nodePhase = (nodeId: number) => rng(nodeId + 5)() * 80;
 
 /** 他の道の車道の上に物を置かないための、線分の格子（空間ハッシュ） */
 class SegGrid {
@@ -82,11 +78,10 @@ function* walk(line: RoadLine, start: number, step: number, jitter: () => number
   }
 }
 
-export function placeFurniture(lines: RoadLine[], nodes: RoadNode[], opts: { treeRadius: number }): Furniture {
+export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { treeRadius: number }): Furniture {
   const grid = new SegGrid(lines);
   const trees: TreeInst[] = [];
   const lamps: LampInst[] = [];
-  const signals: SignalInst[] = [];
   const hedges: PropInst[] = [];
   const signs: PropInst[] = [];
   const vends: PropInst[] = [];
@@ -99,7 +94,8 @@ export function placeFurniture(lines: RoadLine[], nodes: RoadNode[], opts: { tre
     const r = rng(line.id + 11);
     const hr = halfRoad(line.rank);
     const sw = SIDEWALK_WIDTH[line.rank];
-    const treeLine = line.rank >= 3 ? 0.95 : r() < 0.45 ? 0.85 : 0;
+    // 街路樹は、広い道（13m 以上）にだけ植える（狭い道では建物に埋もれるため）
+    const treeLine = line.rank >= 3 ? 0.95 : 0;
     const edgeFree = (s: number, margin: number) =>
       !(line.startShift >= 0 && s < line.startShift + margin) &&
       !(line.endShift >= 0 && line.length - s < line.endShift + margin);
@@ -178,28 +174,5 @@ export function placeFurniture(lines: RoadLine[], nodes: RoadNode[], opts: { tre
     }
   }
 
-  // 信号（交差点の、車が入ってくる道ごとに 1 本）
-  for (const node of nodes) {
-    if (!needsSignal(node)) continue;
-    const phase = nodePhase(node.id);
-    for (const arm of node.arms) {
-      const line = arm.line;
-      if (line.rank < 2 || line.length < 22) continue;
-      const hr = halfRoad(line.rank);
-      const cross = arm.atStart ? line.startShift : line.endShift;
-      const along = cross + 6.4;
-      // 車は交差点に向かってくる。その左側の歩道に立てる
-      const lx = -arm.az, lz = arm.ax;
-      const x = node.x + arm.ax * along + lx * (hr + 0.6);
-      const z = node.z + arm.az * along + lz * (hr + 0.6);
-      signals.push({
-        x, z,
-        rot: Math.atan2(arm.ax, arm.az),
-        phase,
-        axis: Math.abs(arm.ax) > Math.abs(arm.az) ? 1 : 0,
-        reach: Math.min(hr + 0.3, 7.5),
-      });
-    }
-  }
-  return { trees, lamps, signals, hedges, signs, vends, shrubs, tufts };
+  return { trees, lamps, hedges, signs, vends, shrubs, tufts };
 }

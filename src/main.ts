@@ -6,7 +6,6 @@ import { setupLook } from "./render/look";
 import { LocalFrame } from "./core/geo";
 import { Buildings } from "./world/buildings";
 import { Roads } from "./world/roads";
-import { signalClock } from "./world/signal";
 import { Driver } from "./world/drive";
 import { SEATS, createInterior, type SeatId } from "./world/carInterior";
 import { loadTextures } from "./render/assets";
@@ -96,7 +95,7 @@ async function main() {
   buildings.radius = isMobile ? 1500 : 2000;
   scene.add(buildings.group);
 
-  // 道路・歩道・街路樹・信号（?roads=0 で出さない）
+  // 道路・歩道・街路樹など（?roads=0 で出さない）
   const roads = new Roads(log);
   roads.radius = isMobile ? 1200 : 1500;
   roads.treeRadius = isMobile ? 450 : 700;
@@ -146,10 +145,10 @@ async function main() {
     };
     $("radius").appendChild(b);
   });
-  // 画質（低: 影なし / 中: 影＋空の映り込み / 高: さらに暗がり・光のにじみ・縁のなめらか化）
-  (["low", "mid", "high"] as const).forEach((q) => {
+  // 画質（低: 影なし / 中: 影＋空の映り込み）
+  (["low", "mid"] as const).forEach((q) => {
     const b = document.createElement("button");
-    b.textContent = { low: "低", mid: "中", high: "高" }[q];
+    b.textContent = { low: "低", mid: "中" }[q];
     if (q === look.quality) b.classList.add("on");
     b.onclick = () => {
       look.setQuality(q);
@@ -217,7 +216,7 @@ async function main() {
     if (benching) return;
     benching = true;
     const keepMode = ratioMode;
-    const setAll = (o: { shadow: boolean; ao: boolean; post: boolean }, b: boolean, r: boolean, ratio: number, frozen = false, hideInst = false) => {
+    const setAll = (o: { shadow: boolean }, b: boolean, r: boolean, ratio: number, frozen = false, hideInst = false) => {
       look.setOptions(o);
       look.freezeShadow(frozen);
       roads.hideInstanced = hideInst;
@@ -225,17 +224,16 @@ async function main() {
       roads.group.visible = r;
       if (ratio !== curRatio) setRatio(ratio);
     };
-    const ALL = { shadow: shadowOn, ao: true, post: true };
+    const ALL = { shadow: shadowOn };
     // [名前, 動かすか, 設定]
     const steps: [string, boolean, () => void][] = [
       ["止まっている・いまの設定", false, () => setAll(ALL, true, true, baseRatio)],
       ["動く・いまの設定", true, () => setAll(ALL, true, true, baseRatio)],
       ["動く・影の描き直しを止める", true, () => setAll(ALL, true, true, baseRatio, true)],
       ["動く・影を切る", true, () => setAll({ ...ALL, shadow: false }, true, true, baseRatio)],
-      ["動く・後処理（暗がり・にじみ・縁なめらか）を切る", true, () => setAll({ shadow: true, ao: false, post: false }, true, true, baseRatio)],
       ["動く・建物を隠す", true, () => setAll(ALL, false, true, baseRatio)],
-      ["動く・道路・木・信号を全部隠す", true, () => setAll(ALL, true, false, baseRatio)],
-      ["動く・木・街灯・信号だけ隠す（道路の面は残す）", true, () => setAll(ALL, true, true, baseRatio, false, true)],
+      ["動く・道路・木などを全部隠す", true, () => setAll(ALL, true, false, baseRatio)],
+      ["動く・木・街灯などだけ隠す（道路の面は残す）", true, () => setAll(ALL, true, true, baseRatio, false, true)],
       ["動く・解像度を半分にする", true, () => setAll(ALL, true, true, baseRatio * 0.5)],
     ];
     log("【性能の内訳を測定中】約 1 分。自動で少し前後に動きます。触らずに待ってください");
@@ -434,7 +432,7 @@ async function main() {
       camera.position.set(Math.sin(a) * orbitR, orbitH, Math.cos(a) * orbitR);
       camera.lookAt(0, Math.min(30, orbitH), 0);
     } else if (mode === "drive" && driver) {
-      driver.update(dt, now / 1000);
+      driver.update(dt);
       // 見回しは自由（ドラッグ・矢印キー）。勝手に正面へは戻さない（「正面に戻す」ボタン・R キーで戻る）
       const lk = 1.8 * dt;
       if (keys.has("arrowleft")) lookYaw += lk;
@@ -455,10 +453,9 @@ async function main() {
       interior.place(driver.pose.x, driver.pose.z, driver.yaw, st, camera.position);
       yaw = driver.yaw;
       pitch = -0.02;
-      const w = driver.waiting;
       $("hudspeed").textContent = String(Math.round(driver.speedKmh));
       $("hudlimit").textContent = String(Math.round(driver.limitKmh));
-      $("hudwait").textContent = w ? "信号待ち" : driver.speed < 0.5 ? "" : "走行中";
+      $("hudwait").textContent = driver.speed < 0.5 ? "" : "走行中";
     } else {
       camera.rotation.set(pitch, yaw, 0, "YXZ");
       const speed = (streetEye ? (keys.has("shift") ? 40 : 10) : keys.has("shift") ? 300 : 80) * dt;
@@ -491,7 +488,6 @@ async function main() {
     farGround.position.x = camera.position.x;
     farGround.position.z = camera.position.z;
 
-    signalClock.value = now / 1000;
     roads.updateLod(camera.position);
     const t1 = performance.now();
     buildings.update();

@@ -1,15 +1,12 @@
 // 画面全体の「絵作り」: 空・太陽の光と影・空の映り込み・暗がり・光のにじみ・遠くのかすみ。
-// 画質は 低 / 中 / 高 から選べる（重いときは下げる）。
+// 画質は 低 / 中 から選べる（重いときは下げる）。
 import { TEX } from "./assets";
 import * as THREE from "three/webgpu";
 import { SkyMesh } from "three/addons/objects/SkyMesh.js";
-import { ao } from "three/addons/tsl/display/GTAONode.js";
-import { bloom } from "three/addons/tsl/display/BloomNode.js";
-import { fxaa } from "three/addons/tsl/display/FXAANode.js";
-import { float, length, mix, mrt, normalView, output, pass, positionView, positionWorld, renderOutput, saturation, smoothstep, vec2, vec3, vec4 } from "three/tsl";
+import { float, length, mix, positionView, positionWorld, smoothstep, vec2, vec3 } from "three/tsl";
 import { vnoise, type N } from "./noise";
 
-export type Quality = "low" | "mid" | "high";
+export type Quality = "low" | "mid";
 
 export type Look = {
   group: THREE.Group;
@@ -18,8 +15,8 @@ export type Look = {
   /** 毎コマ、カメラの位置に合わせて空と影を動かす */
   update(): void;
   render(): void;
-  /** 性能の切り分け用: 影・暗がり(AO)・光のにじみと縁のなめらか化 を個別に切る */
-  setOptions(o: Partial<{ shadow: boolean; ao: boolean; post: boolean }>): void;
+  /** 性能の切り分け用: 影を切る */
+  setOptions(o: Partial<{ shadow: boolean }>): void;
   /** true の間は影の絵を描き直さない（測定用） */
   freezeShadow(b: boolean): void;
   groundMaterial: THREE.MeshStandardNodeMaterial;
@@ -122,10 +119,9 @@ export function setupLook(
     groundMaterial.colorNode = mix(lot.mul(TEX.concrete.detail(p)), grass, k).mul(n3.mul(0.14).add(0.93));
   }
 
-  // --- 画質ごとの組み立て ---
-  let pipeline: THREE.RenderPipeline | null = null;
-  let quality: Quality = isMobile ? "mid" : "high";
-  const opt = { shadow: true, ao: true, post: true };
+  // --- 画質ごとの組み立て（低: 影なし / 中: 影＋空の映り込み）。後処理は使わない（画面の縁は MSAA でなめらかにする） ---
+  let quality: Quality = "mid";
+  const opt = { shadow: true };
 
   const applyShadow = (size: number) => {
     sun.shadow.mapSize.set(size, size);
@@ -135,47 +131,11 @@ export function setupLook(
     }
   };
 
-  const buildPipeline = () => {
-    // 後処理の中の場面は、MSAA（なめらか化）を使わない（暗がりの計算が奥行きを読むため）。ギザギザは FXAA でなめらかにする
-    const scenePass = pass(scene, camera, { samples: 0 });
-    scenePass.setMRT(mrt({ output, normal: normalView }));
-    const col: N = scenePass.getTextureNode("output");
-    const nor: N = scenePass.getTextureNode("normal");
-    const dep: N = scenePass.getTextureNode("depth");
-    const aoPass = ao(dep, nor, camera);
-    aoPass.resolutionScale = 0.5;
-    aoPass.radius.value = 2.5;
-    aoPass.thickness.value = 2.0;
-    aoPass.samples.value = 12;
-    // 暗がりは強くなりすぎないよう下限を設ける（細かい黒ノイズの対策）
-    const occl: N = opt.ao ? mix(1.0, (aoPass.getTextureNode() as N).r, 0.8).max(0.5) : float(1.0);
-    const lit: N = vec4(saturation((col as N).rgb.mul(occl), num("sat", 1.18)), (col as N).a);
-    const glow: N = bloom(lit, num("bloom", 0.12), 0.5, 1.2);
-    const rp = new THREE.RenderPipeline(renderer);
-    rp.outputColorTransform = false;
-    rp.outputNode = opt.post ? fxaa(renderOutput(lit.add(glow))) : renderOutput(lit);
-    return rp;
-  };
-
   const setQuality = (q: Quality) => {
     quality = q;
     shadowDirty = true;
     sun.castShadow = q !== "low" && opt.shadow;
-    applyShadow(q === "high" && !isMobile ? 2048 : 1024);
-    if (q === "high") {
-      if (!pipeline) {
-        try {
-          pipeline = buildPipeline();
-        } catch (e) {
-          log("高画質の後処理を作れなかった（中画質で続行）: " + ((e as Error)?.message ?? e));
-          quality = "mid";
-          pipeline = null;
-        }
-      }
-    } else {
-      pipeline?.dispose?.();
-      pipeline = null;
-    }
+    applyShadow(1024);
   };
 
   const tmp = new THREE.Vector3();
@@ -220,16 +180,13 @@ export function setupLook(
   };
 
   const render = () => {
-    if (pipeline) pipeline.render();
-    else renderer.render(scene, camera);
+    renderer.render(scene, camera);
   };
 
   setQuality(quality);
 
   const setOptions: Look["setOptions"] = (o) => {
     Object.assign(opt, o);
-    pipeline?.dispose?.();
-    pipeline = null;
     setQuality(quality);
   };
 

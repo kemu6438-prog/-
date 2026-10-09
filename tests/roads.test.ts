@@ -3,10 +3,9 @@ import { VectorTile } from "@mapbox/vector-tile";
 import Pbf from "pbf";
 // @ts-expect-error 型定義がない
 import vtpbf from "vt-pbf";
-import { ZOOM, analyzeNodes, latToTileY, lonToTileX, needsSignal, parseRoadLayer, tileXToLon, tileYToLat } from "../src/world/roadData";
+import { ZOOM, analyzeNodes, latToTileY, lonToTileX, parseRoadLayer, tileXToLon, tileYToLat } from "../src/world/roadData";
 import { buildRibbon, roadExtra, sidewalkExtra } from "../src/world/roadGeometry";
 import { placeFurniture } from "../src/world/roadFurniture";
-import { signalState } from "../src/world/signal";
 
 function mockTile() {
   const tags = (rank: number) => ({ ftCode: 2701, rdCtg: 2, rnkWidth: rank, lvOrder: 0 });
@@ -48,14 +47,14 @@ describe("道路データ", () => {
     const nodes = analyzeNodes(ls);
     expect(nodes.length).toBe(1);
     expect(nodes[0].arms.length).toBe(4);
-    expect(needsSignal(nodes[0])).toBe(true);
     // 幅員区分 3 の道の縁までは 7.75 m、区分 2 は 4.3 m
     const ns = ls[0].endShift; // 区分 3 の線の終点 → 交わる相手のうち最も広いのは区分 3（もう 1 本）
     expect(ns).toBeCloseTo(7.75, 2);
+    // 街路樹は広い道（区分 3 以上）にだけ。区分 2 の道だけなら 1 本も植えない
     const f = placeFurniture(ls, nodes, { treeRadius: 1000 });
-    expect(f.signals.length).toBe(4);
-    // 信号の柱は、車道の外（歩道）に立つ
-    for (const s of f.signals) expect(Math.min(Math.abs(s.x), Math.abs(s.z))).toBeGreaterThan(4);
+    expect(f.trees.length).toBeGreaterThan(0);
+    const narrowOnly = ls.map((l) => ({ ...l, rank: 2 }));
+    expect(placeFurniture(narrowOnly, nodes, { treeRadius: 1000 }).trees.length).toBe(0);
   });
   it("端がタイルの境目の線は交差点にしない", () => {
     expect(lines[0].startCut).toBe(true);
@@ -83,17 +82,5 @@ describe("道の帯", () => {
     expect(Math.abs(rb.position[0] - rb.position[3])).toBeCloseTo(8.6, 3);
     const sw = buildRibbon([line], sidewalkExtra, 0.01);
     expect(Math.abs(sw.position[0] - sw.position[3])).toBeCloseTo(8.6 + 4.0, 3);
-  });
-});
-
-describe("信号", () => {
-  it("縦が青の間、横は赤。黄色をはさんで入れ替わる", () => {
-    expect(signalState(0, 0, 0)).toBe(0);
-    expect(signalState(0, 0, 1)).toBe(2);
-    expect(signalState(33, 0, 0)).toBe(1);
-    expect(signalState(36, 0, 0)).toBe(2);
-    expect(signalState(41, 0, 1)).toBe(0);
-    // 縦と横が同時に青にはならない
-    for (let t = 0; t < 80; t += 0.5) expect(signalState(t, 7, 0) === 0 && signalState(t, 7, 1) === 0).toBe(false);
   });
 });

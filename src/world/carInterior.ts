@@ -128,7 +128,7 @@ export function createInterior() {
   mat.depthWrite = true; // 暗がりの計算が奥行きを読むので、書き込みだけは行う
   const mesh = new THREE.Mesh(buildGeometry(), mat);
   mesh.frustumCulled = false;
-  mesh.renderOrder = 1000;
+  mesh.renderOrder = 1e6; // 何よりも最後に描く（道路の面などより後）
   mesh.castShadow = false;
   mesh.receiveShadow = false;
   car.add(mesh);

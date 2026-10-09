@@ -1,4 +1,4 @@
-// 道路・歩道・街路樹・街灯・信号を、国土地理院の道路データから作って画面に置く。
+// 道路・歩道・街路樹・街灯などを、国土地理院の道路データから作って画面に置く。
 import * as THREE from "three/webgpu";
 import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import {
@@ -13,7 +13,6 @@ import {
 } from "./roadData";
 import { buildRibbon, roadExtra, sidewalkExtra, type Ribbon } from "./roadGeometry";
 import { placeFurniture, type Furniture } from "./roadFurniture";
-import { signalClock } from "./signal";
 
 // ---------------------------------------------------------------------------
 // 見た目（シェーダー）
@@ -94,29 +93,29 @@ function roadMaterial(level: number): THREE.MeshStandardNodeMaterial {
   const lines: N = max(max(edgeL, centre), lanes).mul(keep);
   // 停止線（車は左側通行。交差点に向かう車線 = 進行方向の左 = u<0 側が終点向き）
   const inRoad: N = step(abs(u), hr.sub(0.2));
-  const stopE: N = box1(dE, 4.7, 5.15, aaS).mul(step(u, -0.2)).mul(inRoad).mul(hasLines);
-  const stopS: N = box1(dS, 4.7, 5.15, aaS).mul(step(0.2, u)).mul(inRoad).mul(hasLines);
   // 横断歩道（縞）
   const zebra: N = cover(fract(u.div(0.9)).sub(0.5), 0.5 / 0.9, aaU.div(0.9));
   const crossE: N = box1(dE, 1.3, 4.2, aaS).mul(zebra).mul(inRoad).mul(hasLines);
   const crossS: N = box1(dS, 1.3, 4.2, aaS).mul(zebra).mul(inRoad).mul(hasLines);
-  const paint: N = max(max(lines, max(stopE, stopS)), max(crossE, crossS));
+  const paint: N = max(lines, max(crossE, crossS));
   const worn: N = float(0.72).add(vnoise(pw.mul(2.3)).mul(0.28));
   const farFade: N = float(1.0).sub(smoothstep(380.0, 800.0, dist));
   const mark: N = paint.mul(worn).mul(farFade);
   const white: N = vec3(0.8, 0.8, 0.76);
-  m.colorNode = new URLSearchParams(location.search).has("rdbg") ? vec3(1, 0, 0) : mix(asphalt, white, mark);
+  m.colorNode = mix(asphalt, white, mark);
   m.roughnessNode = mix(float(0.92), float(0.6), mark);
+  // 道路の面どうしは奥行きで勝ち負けを決めず、描く順番（歩道 → 細い道 → 太い道）で重ねる。奥行きの精度に左右されず、白線がちらつかない
+  m.depthWrite = false;
 
-  const pk = Number(new URLSearchParams(location.search).get("pofs") ?? 1);
-  m.polygonOffset = pk !== 0;
-  m.polygonOffsetFactor = -(2 + level) * pk;
-  m.polygonOffsetUnits = -(2 + level) * pk;
+  m.polygonOffset = true;
+  m.polygonOffsetFactor = -(2 + level);
+  m.polygonOffsetUnits = -(2 + level);
   return m;
 }
 
 function sidewalkMaterial(): THREE.MeshStandardNodeMaterial {
   const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.88, metalness: 0 });
+  m.depthWrite = false; // 描く順番で重ねる（roadMaterial と同じ）
   const rp: N = attribute("rpos", "vec2");
   const rd: N = attribute("rd", "vec4");
   const u: N = abs(rp.x);
@@ -146,10 +145,9 @@ function sidewalkMaterial(): THREE.MeshStandardNodeMaterial {
   const bump: N = step(0.5, fract(v.div(0.3)).sub(0.5).abs().mul(2.0).add(fract(u.div(0.3)).sub(0.5).abs().mul(2.0)).mul(0.5));
   col = mix(col, vec3(0.78, 0.62, 0.12).mul(float(0.9).add(bump.mul(0.12))), guide.mul(0.95));
   m.colorNode = col;
-  const pk = Number(new URLSearchParams(location.search).get("pofs") ?? 1);
-  m.polygonOffset = pk !== 0;
-  m.polygonOffsetFactor = -1 * pk;
-  m.polygonOffsetUnits = -1 * pk;
+  m.polygonOffset = true;
+  m.polygonOffsetFactor = -1;
+  m.polygonOffsetUnits = -1;
   return m;
 }
 
@@ -319,38 +317,6 @@ function lampGeometry(): THREE.BufferGeometry {
   ].map((g) => (g.deleteAttribute("uv"), g)))!;
 }
 
-/** 信号機: 柱・腕・2 つの灯器。灯器の前面を +z に向ける。lamp 属性: -1 本体 / 0 青 / 1 黄 / 2 赤 */
-function signalGeometry(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
-  const lampAttr = (g: THREE.BufferGeometry, k: number) => {
-    g.setAttribute("lamp", new THREE.BufferAttribute(new Float32Array(g.getAttribute("position").count).fill(k), 1));
-    return g;
-  };
-  const body = (g: THREE.BufferGeometry, color: number) => lampAttr(paint(bare(g), color), -1);
-  const pole = new THREE.CylinderGeometry(0.1, 0.15, 6.2, 6);
-  pole.translate(0, 3.1, 0);
-  parts.push(body(pole, 0x6b7378));
-  const arm = new THREE.BoxGeometry(5.2, 0.12, 0.12);
-  arm.translate(2.6, 5.95, 0);
-  parts.push(body(arm, 0x6b7378));
-  const colors = [0x18c9a0, 0xffc21a, 0xff2a14];
-  for (const hx of [2.3, 4.5]) {
-    const h = new THREE.BoxGeometry(1.15, 0.38, 0.3);
-    h.translate(hx, 5.55, 0);
-    parts.push(body(h, 0x2b3631));
-    const hood = new THREE.BoxGeometry(1.2, 0.04, 0.42);
-    hood.translate(hx, 5.76, 0.06);
-    parts.push(body(hood, 0x1f2824));
-    for (let i = 0; i < 3; i++) {
-      const l = new THREE.CylinderGeometry(0.14, 0.14, 0.05, 10);
-      l.rotateX(Math.PI / 2);
-      l.translate(hx + (i - 1) * 0.37, 5.55, 0.16);
-      parts.push(lampAttr(paint(bare(l), colors[i]), i));
-    }
-  }
-  return mergeGeometries(parts.map((g) => (g.deleteAttribute("uv"), g)))!;
-}
-
 // ---------------------------------------------------------------------------
 // 置く側
 // ---------------------------------------------------------------------------
@@ -399,14 +365,14 @@ function chunkedInstances<T extends { x: number; z: number }>(
 /** 道ばたの物の塊を、カメラからの距離で出したり隠したりする（遠くの小さな物は描かない・影も落とさない） */
 type Lod = { meshes: THREE.InstancedMesh[]; draw: number; shadow: number };
 
-export type RoadStats = { tiles: number; failedTiles: number; lines: number; nodes: number; signals: number; trees: number; lamps: number; triangles: number };
+export type RoadStats = { tiles: number; failedTiles: number; lines: number; nodes: number; trees: number; lamps: number; triangles: number };
 
 export class Roads {
   readonly group = new THREE.Group();
   /** 読み込んだ道（自動運転が使う） */
   lines: RoadLine[] = [];
   nodes: RoadNode[] = [];
-  stats: RoadStats = { tiles: 0, failedTiles: 0, lines: 0, nodes: 0, signals: 0, trees: 0, lamps: 0, triangles: 0 };
+  stats: RoadStats = { tiles: 0, failedTiles: 0, lines: 0, nodes: 0, trees: 0, lamps: 0, triangles: 0 };
   private readonly mats = [0, 1, 2, 3, 4].map((l) => roadMaterial(l));
   private readonly walkMat = sidewalkMaterial();
   private readonly treeGeo = treeGeometry();
@@ -417,15 +383,13 @@ export class Roads {
   private readonly shrubGeo = shrubGeometry();
   private readonly tuftGeo = tuftGeometry();
   private readonly tuftMat: THREE.MeshStandardNodeMaterial;
-  private readonly signalGeo = signalGeometry();
   private readonly treeMat: THREE.MeshStandardNodeMaterial;
   private readonly metalMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.3, vertexColors: true });
-  private readonly signalMat: THREE.MeshStandardNodeMaterial;
   private token = 0;
   radius = 1500;
   treeRadius = 800;
   private lods: Lod[] = [];
-  /** 測定用: 木・街灯・信号を全部隠す */
+  /** 測定用: 木・街灯などを全部隠す */
   hideInstanced = false;
 
   constructor(private readonly log: (m: string) => void, private readonly tileUrlOf?: (z: number, x: number, y: number) => string) {
@@ -444,16 +408,6 @@ export class Roads {
     this.treeMat = tm;
     this.tuftMat = tm.clone();
     this.tuftMat.side = THREE.DoubleSide;
-    // 信号: 今の信号の色に合う灯器だけを光らせる
-    const sm = new THREE.MeshStandardNodeMaterial({ roughness: 0.5, metalness: 0.2, vertexColors: true });
-    const sig: N = attribute("sig", "vec2");
-    const lamp: N = attribute("lamp", "float");
-    const tt: N = signalClock.add(sig.x).add(sig.y.mul(40.0)).mod(80.0);
-    const state: N = tt.lessThan(32.0).select(float(0.0), tt.lessThan(35.0).select(float(1.0), float(2.0)));
-    const lit: N = step(0.5, lamp.add(1.0)).mul(float(1.0).sub(abs(lamp.sub(state)).min(1.0)));
-    sm.colorNode = mix(vec3(1, 1, 1), vec3(0.25, 0.25, 0.25), step(0.5, lamp.add(1.0)).mul(float(1.0).sub(lit)));
-    sm.emissiveNode = vertexColor().rgb.mul(lit).mul(3.2);
-    this.signalMat = sm;
   }
 
   private get treeDraw() {
@@ -480,7 +434,7 @@ export class Roads {
       this.group.remove(c);
       c.traverse((o) => {
         const mesh = o as THREE.Mesh;
-        if (mesh.isMesh && mesh.geometry !== this.treeGeo && mesh.geometry !== this.lampGeo && mesh.geometry !== this.signalGeo && mesh.geometry !== this.hedgeGeo && mesh.geometry !== this.signGeo && mesh.geometry !== this.vendGeo) mesh.geometry.dispose();
+        if (mesh.isMesh && mesh.geometry !== this.treeGeo && mesh.geometry !== this.lampGeo && mesh.geometry !== this.hedgeGeo && mesh.geometry !== this.signGeo && mesh.geometry !== this.vendGeo) mesh.geometry.dispose();
       });
     }
   }
@@ -537,7 +491,7 @@ export class Roads {
 
     // --- 道（幅員区分ごとに別の面にして、太い道ほど手前に描く） ---
     let tris = 0;
-    const addRibbon = (rb: Ribbon, mat: THREE.Material, y: number) => {
+    const addRibbon = (rb: Ribbon, mat: THREE.Material, y: number, order: number) => {
       if (rb.vertexCount === 0) return;
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(rb.position, 3));
@@ -549,6 +503,7 @@ export class Roads {
       const mesh = new THREE.Mesh(g, mat);
       mesh.receiveShadow = true;
       mesh.frustumCulled = true;
+      mesh.renderOrder = order;
       mesh.position.y = 0;
       this.group.add(mesh);
       tris += rb.index.length / 3;
@@ -563,11 +518,14 @@ export class Roads {
       if (a) a.push(l);
       else cells.set(k, [l]);
     }
+    let cellNo = 0;
     for (const cellLines of cells.values()) {
-      addRibbon(buildRibbon(cellLines, sidewalkExtra, 0.01), this.walkMat, 0.01);
+      cellNo++;
+      // 描く順番: 歩道 → 幅員区分 0 → … → 4（箱ごとにも固定の順番を付けて、重なる所で入れ替わらないようにする）
+      addRibbon(buildRibbon(cellLines, sidewalkExtra, 0.01), this.walkMat, 0.01, 100 + cellNo);
       for (let r = 0; r <= 4; r++) {
         const ls = cellLines.filter((l) => l.rank === r);
-        addRibbon(buildRibbon(ls, roadExtra, 0.02 + r * 0.004), this.mats[r], 0);
+        addRibbon(buildRibbon(ls, roadExtra, 0.02 + r * 0.004), this.mats[r], 0, 100 + (r + 1) * 1000 + cellNo);
       }
     }
 
@@ -584,16 +542,6 @@ export class Roads {
     }) });
     this.lods.push({ draw: 350, shadow: 0, meshes: chunkedInstances(this.group, this.lampGeo, this.metalMat, f.lamps, (l, m) => {
       m.compose(new THREE.Vector3(l.x, 0, l.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), l.rot), new THREE.Vector3(1, 1, 1));
-    }) });
-    this.lods.push({ draw: 600, shadow: 0, meshes: chunkedInstances(this.group, this.signalGeo, this.signalMat, f.signals, (s, m) => {
-      m.compose(new THREE.Vector3(s.x, 0, s.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), s.rot), new THREE.Vector3(1, 1, 1));
-    }, {
-      extra: (g, list) => {
-        const a = new Float32Array(list.length * 2);
-        list.forEach((s, i) => { a[i * 2] = s.phase; a[i * 2 + 1] = s.axis; });
-        g.setAttribute("sig", new THREE.InstancedBufferAttribute(a, 2));
-      },
-      cell: 400,
     }) });
     // 生け垣・標識・自動販売機（近くだけ描く）
     const Y = new THREE.Vector3(0, 1, 0);
@@ -624,11 +572,11 @@ export class Roads {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
     }, { cell: 200 }) });
     const triOf = (g: THREE.BufferGeometry, k: number) => (g.index ? g.index.count : g.getAttribute("position").count) / 3 * k;
-    tris += triOf(this.treeGeo, f.trees.length) + triOf(this.lampGeo, f.lamps.length) + triOf(this.signalGeo, f.signals.length)
+    tris += triOf(this.treeGeo, f.trees.length) + triOf(this.lampGeo, f.lamps.length)
       + triOf(this.shrubGeo, f.shrubs.length) + triOf(this.tuftGeo, f.tufts.length) + triOf(this.hedgeGeo, f.hedges.length) + triOf(this.signGeo, f.signs.length) + triOf(this.vendGeo, f.vends.length);
-    this.stats = { ...this.stats, signals: f.signals.length, trees: f.trees.length, lamps: f.lamps.length, triangles: tris };
+    this.stats = { ...this.stats, trees: f.trees.length, lamps: f.lamps.length, triangles: tris };
     this.log(
-      `道路を表示: 信号 ${f.signals.length} / 街路樹 ${f.trees.length} / 街灯 ${f.lamps.length} / 生け垣 ${f.hedges.length} / 低木 ${f.shrubs.length} / 草むら ${f.tufts.length} / 標識 ${f.signs.length} / 自販機 ${f.vends.length} / 三角形 ${(tris / 1e6).toFixed(2)} 百万 / ${(performance.now() - t0).toFixed(0)} ms`,
+      `道路を表示: 街路樹 ${f.trees.length} / 街灯 ${f.lamps.length} / 生け垣 ${f.hedges.length} / 低木 ${f.shrubs.length} / 草むら ${f.tufts.length} / 標識 ${f.signs.length} / 自販機 ${f.vends.length} / 三角形 ${(tris / 1e6).toFixed(2)} 百万 / ${(performance.now() - t0).toFixed(0)} ms`,
     );
   }
 }
