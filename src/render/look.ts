@@ -107,15 +107,15 @@ export function setupLook(
     const near: N = float(1.0).sub(smoothstep(15.0, 140.0, dist)); // 近くだけ細かい粒を出す（遠くのちらつき防止）
     const n1: N = vnoise(p.mul(0.012));
     const n2: N = vnoise(p.mul(0.35));
-    const n3: N = vnoise(p.mul(2.6));
-    const g1: N = vnoise(p.mul(22.0));
+    // 細かいむら（n3・g1）は、ネットの素材の模様（TEX.*.detail）が受け持つので、計算では出さない（画素ごとの負担を減らす）
+    const n3: N = n2;
     // 芝: 青々した色のむらに、ネットの芝の素材（読み込めたら）で葉っぱ 1 枚ずつの濃淡を足す。近くだけ強く、遠くは平均に近づける
     const grassTex: N = mix(vec3(1, 1, 1), TEX.grass.detail(p), near.mul(0.85).add(0.15));
     const grass: N = mix(vec3(0.24, 0.4, 0.15), vec3(0.42, 0.52, 0.2), n1.mul(0.6).add(n3.mul(0.4))).mul(grassTex);
     // 道路の外の地面（敷地・広場・歩道のすき間）: 明るめのコンクリートと砂利、ところどころ芝。
     // 道路そのものは roads.ts の専用の面で描くので、ここは「道路以外」の色。
     const lot: N = mix(vec3(0.42, 0.41, 0.39), vec3(0.54, 0.52, 0.48), n2)
-      .mul(float(0.9).add(g1.mul(0.26).mul(near)));
+      .mul(float(0.92).add(n2.mul(0.16)));
     const k: N = smoothstep(0.62, 0.78, n1);
     groundMaterial.colorNode = mix(lot.mul(TEX.concrete.detail(p)), grass, k).mul(n3.mul(0.14).add(0.93));
   }

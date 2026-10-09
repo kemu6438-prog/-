@@ -2,7 +2,7 @@
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
 /** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
-const BUILD_ID = "12";
+const BUILD_ID = "13";
 import * as THREE from "three/webgpu";
 import { setupLook } from "./render/look";
 import { LocalFrame } from "./core/geo";
@@ -91,6 +91,8 @@ async function main() {
   farGround.rotation.x = -Math.PI / 2;
   farGround.position.y = -0.6;
   scene.add(farGround);
+  // 地面は建物・木より後（道路より前）に描く。先に建物を描いておくと、建物の裏に隠れる地面の画素は、重い塗りをせずに済む
+  for (const g of [ground, midGround, farGround]) g.renderOrder = 50;
   if (new URLSearchParams(location.search).get("ground") === "0") { ground.visible = false; midGround.visible = false; farGround.visible = false; }
 
   const buildings = new Buildings(camera, renderer, frame, log, isMobile ? 26 : 16);
