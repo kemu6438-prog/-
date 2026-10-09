@@ -105,27 +105,18 @@ export function setupLook(
   // 影の縁のぼかしは、軽い方式（PCF）にする。PCFSoft は 1 画素あたりの参照回数が多く、影を受ける全部の面で重くなる
   renderer.shadowMap.type = qs.get("softshadow") === "1" ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
 
-  // --- 地面（芝とコンクリートのまだら。道路を作るまでの仮） ---
+  // --- 地面（コンクリートと砂利。道路を作るまでの仮） ---
   const groundMaterial = new THREE.MeshStandardNodeMaterial({ roughness: 0.93, metalness: 0 });
   {
     const p: N = vec2(positionWorld.x, positionWorld.z);
-    const dist: N = length(positionView as N);
-    const near: N = float(1.0).sub(smoothstep(15.0, 140.0, dist)); // 近くだけ細かい粒を出す（遠くのちらつき防止）
-    const n1: N = vnoise(p.mul(0.012));
-    const n2: N = vnoise(p.mul(0.35));
-    // 細かいむら（n3・g1）は、ネットの素材の模様（TEX.*.detail）が受け持つので、計算では出さない（画素ごとの負担を減らす）
-    const n3: N = n2;
-    // 芝: 青々した色のむらに、ネットの芝の素材（読み込めたら）で葉っぱ 1 枚ずつの濃淡を足す。近くだけ強く、遠くは平均に近づける
-    const grassTex: N = mix(vec3(1, 1, 1), TEX.grass.detail(p), near.mul(0.85).add(0.15));
-    const grass: N = mix(vec3(0.24, 0.4, 0.15), vec3(0.42, 0.52, 0.2), n1.mul(0.6).add(n3.mul(0.4))).mul(grassTex);
-    // 道路の外の地面（敷地・広場・歩道のすき間）: 明るめのコンクリートと砂利、ところどころ芝。
+    // 地面の芝は、いったんやめた（草を消す指示）。道路の外の地面は、明るめのコンクリートと砂利だけ。
     // 道路そのものは roads.ts の専用の面で描くので、ここは「道路以外」の色。
+    const n2: N = vnoise(p.mul(0.35));
     const lot: N = mix(vec3(0.42, 0.41, 0.39), vec3(0.54, 0.52, 0.48), n2)
       .mul(float(0.92).add(n2.mul(0.16)));
-    const k: N = smoothstep(0.62, 0.78, n1);
     // 影の濃淡: 地面の「影の中の明るさ」に、大きなむら（広場ごと・街区ごとの違い）をつける
     groundMaterial.aoNode = mix(float(0.55), float(1.0), smoothstep(0.15, 0.85, vnoise(p.mul(0.021).add(vec2(37.0, 11.0)))));
-    groundMaterial.colorNode = mix(lot.mul(TEX.concrete.detail(p)), grass, k).mul(n3.mul(0.14).add(0.93));
+    groundMaterial.colorNode = lot.mul(TEX.concrete.detail(p)).mul(n2.mul(0.14).add(0.93));
   }
 
   // --- 画質ごとの組み立て（低: 影なし / 中: 影＋空の映り込み）。後処理は使わない（画面の縁は MSAA でなめらかにする） ---

@@ -2,7 +2,8 @@
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
 /** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
-const BUILD_ID = "19";
+const BUILD_ID = "20";
+import { StallMeter } from "./core/stalls";
 import * as THREE from "three/webgpu";
 import { setupLook } from "./render/look";
 import { LocalFrame } from "./core/geo";
@@ -437,6 +438,9 @@ async function main() {
   let jsUpd = 0, jsRen = 0, lowSec = 0, okSec = 0, worstUpd = 0, worstRen = 0;
   const tmp = new THREE.Vector3();
   const UP = new THREE.Vector3(0, 1, 0);
+  // 引っかかりの犯人探し（見るだけ）。走っている間、10 秒ごとに「時間がどこで失われたか」を記録する
+  const stalls = new StallMeter(log);
+  let lastLoaded = 0, lastRoadTiles = 0, lastSumMode = "";
   renderer.setAnimationLoop(() => {
     const now = performance.now();
     const dt = Math.min(0.1, (now - last) / 1000);
@@ -549,6 +553,18 @@ async function main() {
       log(`引っかかり ${gap.toFixed(0)} ms（前のコマの内訳: 描画命令 ${hitchRen.toFixed(0)} / 更新 ${hitchUpd.toFixed(0)} / 道 ${hitchRoad.toFixed(0)} / 建物タイル処理 ${hitchTile.toFixed(0)} / 影の描き直し ${hitchShadow ? "あり" : "なし"}）`);
     }
     hitchRen = t3 - t2; hitchUpd = t2 - t1; hitchRoad = tr1 - tr0; hitchTile = tileMs; hitchShadow = redraws !== lastRedraws; lastRedraws = redraws;
+
+    stalls.frame(now, t3, gap);
+    if (mode !== lastSumMode) { lastSumMode = mode; stalls.reset(); }
+    if (mode === "drive") {
+      const sm = stalls.summary("");
+      if (sm) {
+        const bs = buildings.stats();
+        const dl = bs.loadedTiles - lastLoaded, dr = roads.stats.tiles - lastRoadTiles;
+        lastLoaded = bs.loadedTiles; lastRoadTiles = roads.stats.tiles;
+        log(`${sm} ｜ 建物タイル 読み込み済 ${bs.loadedTiles}（変化 ${dl >= 0 ? "+" : ""}${dl}）/ 処理中 ${bs.parsing} / 待ち ${bs.queued} ｜ 道タイル ${roads.stats.tiles}（変化 ${dr >= 0 ? "+" : ""}${dr}）`);
+      }
+    }
 
     if (now - lastStats > 500) {
       lastStats = now;
