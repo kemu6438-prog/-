@@ -22,6 +22,29 @@ const pick = (s: N, vals: number[]): N => {
   return r;
 };
 
+/** 壁の色（種類 s ごと。建物ごとの乱数 h1〜h3 で少し変える）。近くの壁と遠くの壁で同じ色にするため、共通にしてある */
+function wallBaseColor(s: N, h1: N, h2: N, h3: N): N {
+  const cream = vec3(0.95, 0.9, 0.78);
+  const peach = vec3(0.95, 0.78, 0.62);
+  const blue = vec3(0.72, 0.8, 0.86);
+  const sage = vec3(0.76, 0.82, 0.68);
+  const warm: N = mix(cream, peach, smoothstep(0.0, 0.33, h1));
+  const cool: N = mix(blue, sage, smoothstep(0.55, 0.85, h1));
+  const pastel: N = mix(warm, cool, smoothstep(0.33, 0.66, h1)).mul(float(0.88).add(h3.mul(0.2)));
+  const modern: N = mix(vec3(0.78, 0.8, 0.82), vec3(0.9, 0.9, 0.88), h3).mul(float(0.9).add(h2.mul(0.15)));
+  const dwelling: N = mix(vec3(0.93, 0.84, 0.7), vec3(0.78, 0.84, 0.72), h1).mul(float(0.9).add(h3.mul(0.15)));
+  const brickC: N = mix(vec3(0.5, 0.26, 0.2), vec3(0.68, 0.58, 0.44), step(0.5, h3)).mul(float(0.85).add(h2.mul(0.25)));
+  const stoneC: N = mix(vec3(0.8, 0.77, 0.7), vec3(0.62, 0.62, 0.6), h1).mul(float(0.92).add(h3.mul(0.12)));
+  let wallBase: N = pastel;
+  wallBase = mix(wallBase, modern, step(0.5, s));
+  wallBase = mix(wallBase, vec3(0.78, 0.8, 0.84), step(1.5, s)); // ガラスの建物の壁（枠・腰壁）は明るい灰色
+  wallBase = mix(wallBase, dwelling, step(2.5, s));
+  wallBase = mix(wallBase, brickC, step(3.5, s));
+  wallBase = mix(wallBase, stoneC, step(4.5, s));
+
+  return wallBase;
+}
+
 /**
  * 外観の種類（s）:
  * 0 事務所ビル（格子の窓）/ 1 横長の連続窓 / 2 ガラスのカーテンウォール
@@ -96,23 +119,7 @@ function buildLook(idRaw: N): Out {
   const glass: N = (tex.a as N).mul(wallMask);
 
   // --- 壁の色（種類ごと） ---
-  const cream = vec3(0.95, 0.9, 0.78);
-  const peach = vec3(0.95, 0.78, 0.62);
-  const blue = vec3(0.72, 0.8, 0.86);
-  const sage = vec3(0.76, 0.82, 0.68);
-  const warm: N = mix(cream, peach, smoothstep(0.0, 0.33, h1));
-  const cool: N = mix(blue, sage, smoothstep(0.55, 0.85, h1));
-  const pastel: N = mix(warm, cool, smoothstep(0.33, 0.66, h1)).mul(float(0.88).add(h3.mul(0.2)));
-  const modern: N = mix(vec3(0.78, 0.8, 0.82), vec3(0.9, 0.9, 0.88), h3).mul(float(0.9).add(h2.mul(0.15)));
-  const dwelling: N = mix(vec3(0.93, 0.84, 0.7), vec3(0.78, 0.84, 0.72), h1).mul(float(0.9).add(h3.mul(0.15)));
-  const brickC: N = mix(vec3(0.5, 0.26, 0.2), vec3(0.68, 0.58, 0.44), step(0.5, h3)).mul(float(0.85).add(h2.mul(0.25)));
-  const stoneC: N = mix(vec3(0.8, 0.77, 0.7), vec3(0.62, 0.62, 0.6), h1).mul(float(0.92).add(h3.mul(0.12)));
-  let wallBase: N = pastel;
-  wallBase = mix(wallBase, modern, step(0.5, s));
-  wallBase = mix(wallBase, vec3(0.78, 0.8, 0.84), step(1.5, s)); // ガラスの建物の壁（枠・腰壁）は明るい灰色
-  wallBase = mix(wallBase, dwelling, step(2.5, s));
-  wallBase = mix(wallBase, brickC, step(3.5, s));
-  wallBase = mix(wallBase, stoneC, step(4.5, s));
+  const wallBase: N = wallBaseColor(s, h1, h2, h3);
 
   // 画像の「ほぼ無彩色の所」だけに壁の色を掛ける（ガラス・看板・カーテンなど色のある所は、そのまま）
   const chroma: N = max(max(rgb.x, rgb.y), rgb.z).sub(min(min(rgb.x, rgb.y), rgb.z));
@@ -171,6 +178,45 @@ export function facadeMaterial(idAttribute: string | null): THREE.MeshStandardNo
   // 建物データの読み込み側が、使い終わりの建物ごとに材質を dispose する。共有の材質を壊されると、次に使うとき重いシェーダーを作り直して画面が止まるので、無視する
   m.dispose = () => {};
   cache.set(key, m);
+  return m;
+}
+
+const farCache = new Map<string, THREE.MeshStandardNodeMaterial>();
+
+/**
+ * 遠くの建物用の軽い材質。窓の画像・質感・つやなどは使わず、壁の色（近くと同じ）を平らに塗るだけにする。
+ * 遠くは 1 画素に窓が何枚も入るので、窓の絵を引いても見た目はほとんど変わらず、計算だけが重い。
+ */
+export function farFacadeMaterial(idAttribute: string | null): THREE.MeshStandardNodeMaterial {
+  const key = idAttribute ?? "(none)";
+  let m = farCache.get(key);
+  if (m) return m;
+  m = new THREE.MeshStandardNodeMaterial({ roughness: 0.88, metalness: 0, flatShading: true });
+  const id0: N = idAttribute
+    ? (attribute(idAttribute, "float") as unknown as N)
+    : (positionWorld.x.div(22.0).floor().mul(7.0).add(positionWorld.z.div(22.0).floor().mul(131.0)) as unknown as N);
+  const id: N = id0.add(0.5).floor();
+  const h1 = hash(id), h2 = hash(id.add(17.3)), h3 = hash(id.add(41.7)), hs = hash(id.add(77.7));
+  const y: N = positionWorld.y;
+  const s0: N = step(0.28, hs).add(step(0.46, hs)).add(step(0.54, hs)).add(step(0.76, hs)).add(step(0.92, hs));
+  const sTall: N = mix(s0, step(0.45, h2).add(step(0.78, h2)), step(2.5, s0));
+  const s: N = mix(s0, sTall, step(36.0, y));
+  const pv: N = positionView as N;
+  const faceV: N = normalize(cross(dFdx(pv) as N, dFdy(pv) as N));
+  const faceD: N = faceV.transformNormalByInverseViewMatrix(cameraViewMatrix);
+  const wallMask: N = step(abs(faceD.y), 0.5);
+  const isCurtain: N = step(1.5, s).mul(step(s, 2.5));
+  // 窓のぶんだけ少し暗く（近くの壁の平均に合わせる）。ガラスの建物は青みがかった暗さ
+  const base: N = wallBaseColor(s, h1, h2, h3);
+  const wall: N = mix(base.mul(0.82), vec3(0.34, 0.42, 0.52), isCurtain.mul(0.7)).mul(mix(float(0.7), float(1.0), smoothstep(0.0, 14.0, y)));
+  const roofGrey: N = mix(vec3(0.5, 0.52, 0.54), vec3(0.45, 0.53, 0.48), step(0.55, h2));
+  const roof: N = mix(roofGrey, vec3(0.62, 0.34, 0.27), step(0.94, h2)).mul(float(0.85).add(h3.mul(0.2))).mul(0.85);
+  m.colorNode = mix(roof, wall, wallMask);
+  m.roughnessNode = float(0.9);
+  m.metalnessNode = float(0.0);
+  m.aoNode = mix(float(0.42), float(1.0), smoothstep(0.0, 45.0, y)).mul(float(0.78).add(h3.mul(0.3)));
+  m.dispose = () => {};
+  farCache.set(key, m);
   return m;
 }
 

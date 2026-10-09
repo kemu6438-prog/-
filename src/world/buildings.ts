@@ -5,7 +5,7 @@ import { GLTFExtensionsPlugin, LoadRegionPlugin, SphereRegion } from "3d-tiles-r
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import * as THREE from "three/webgpu";
 import type { LocalFrame } from "../core/geo";
-import { depthPrepassMaterial, ensureFloatAttribute, facadeMaterial, findIdAttribute, plainMaterial } from "./facade";
+import { depthPrepassMaterial, ensureFloatAttribute, facadeMaterial, farFacadeMaterial, findIdAttribute, plainMaterial } from "./facade";
 import { addSkirt } from "./skirt";
 import { Footprints } from "./footprints";
 import { WALL_ATTR, addWallTangents, ensureWallAttribute } from "./walls";
@@ -39,6 +39,16 @@ export class Buildings {
   private skirtOk = 0;
   private skirtNo = 0;
   radius = 2000;
+  /** いま実際に読み込む半径。近くから少しずつ広げる（一気に数百枚を読み込むと、その間ずっと重くなる） */
+  private curRadius = 300;
+  private lastUpdate = 0;
+  /** 遠くの建物は軽い材質にする（距離 m。PC / スマホ）。近づいたら元に戻す（ヒステリシス付き） */
+  private readonly farOn = matchMedia("(pointer: coarse)").matches ? 300 : 480;
+  private readonly farOff = this.farOn * 0.82;
+  private readonly styled = new Set<THREE.Mesh>();
+  private styledList: THREE.Mesh[] = [];
+  private styledDirty = false;
+  private styledCursor = 0;
   /** 奥行きだけの先描きを使うか（?prepass=0 で無効） */
   /** 建物の足あと（街路樹などを建物から避けるのに使う） */
   readonly footprints = new Footprints();
@@ -82,8 +92,10 @@ export class Buildings {
     tiles.errorTarget = this.errorTarget;
     // 覚えておく量。小さいと、動くたびに捨てては読み直す（無駄な読み込み）。PC は大きめ、スマホは従来どおり
     const mobile = matchMedia("(pointer: coarse)").matches;
-    tiles.lruCache.minBytesSize = (mobile ? 120 : 200) * 1024 ** 2;
-    tiles.lruCache.maxBytesSize = (mobile ? 200 : 320) * 1024 ** 2;
+    // PC は大きく取る（?cache=メガバイト で変えられる。上限はその 1.6 倍）
+    const cacheMB = Number(new URLSearchParams(location.search).get("cache")) || (mobile ? 120 : 600);
+    tiles.lruCache.minBytesSize = cacheMB * 1024 ** 2;
+    tiles.lruCache.maxBytesSize = cacheMB * 1.6 * 1024 ** 2;
     // 建物の読み込み処理（解析・組み立て）は同時に 2 つまで。5 つが同時に終わると、1 コマに処理が集中して止まる
     tiles.parseQueue = this.parseQueue;
     tiles.setCamera(this.camera);
@@ -119,6 +131,14 @@ export class Buildings {
         if (ok) this.skirtOk++; else this.skirtNo++;
         if ((this.skirtOk + this.skirtNo) % 40 === 1) this.onMessage(`建物の足もと補強（浮き対策）: 済み ${this.skirtOk} / 対象外 ${this.skirtNo} / 壁 ${this.wallTris} 面・屋根 ${this.roofTris} 面・頂点の複製 ${this.wallDup}`);
         mesh.material = this.facadeOn ? facadeMaterial(idName) : plainMaterial();
+        if (this.facadeOn) {
+          mesh.userData.idName = idName; mesh.userData.far = false; this.styled.add(mesh); this.styledDirty = true;
+          // 届いた時点で遠いタイルは、最初から軽い材質にする（一瞬だけ重い材質で描くのを避ける）
+          if (!g.boundingSphere) g.computeBoundingSphere();
+          const bs = g.boundingSphere!;
+          const d = this.tmpC.copy(bs.center).applyMatrix4(m).distanceTo(this.camera.position) - bs.radius;
+          if (d > this.farOn) { mesh.userData.far = true; mesh.material = farFacadeMaterial(idName); mesh.castShadow = false; }
+        }
         // 奥行きだけを先に描く（?prepass=0 で無効にして比べられる）
         if (this.prepass && !mesh.userData.hasPrepass) {
           const pre = new THREE.Mesh(g, depthPrepassMaterial());
@@ -140,6 +160,7 @@ export class Buildings {
     });
     tiles.addEventListener("dispose-model", ({ scene }) => {
       this.loadedTiles = Math.max(0, this.loadedTiles - 1);
+      scene.traverse((o) => { if (this.styled.delete(o as THREE.Mesh)) this.styledDirty = true; });
       this.triangles -= this.triOf.get(scene) ?? 0;
     });
     tiles.addEventListener("load-error", ({ error, url }) => {
@@ -164,6 +185,9 @@ export class Buildings {
     }
     this.renderers.length = 0;
     this.footprints.clear();
+    this.styled.clear();
+    this.styledDirty = true;
+    this.curRadius = 300;
     this.loadedTiles = 0;
     this.triangles = 0;
   }
@@ -186,11 +210,46 @@ export class Buildings {
   update() {
     this.camera.updateMatrixWorld();
     this.footprints.step(1.2); // 屋根の輪郭の書き込み（1 コマ 1.2 ミリ秒まで）
+    // 読み込む半径は、近くから少しずつ広げる（毎秒 70 m）。遠くまで一度に頼むと、数百枚が一気に届いて止まる
+    const now = performance.now();
+    const dt = Math.min(0.2, (now - this.lastUpdate) / 1000);
+    this.lastUpdate = now;
+    this.curRadius = this.curRadius < this.radius ? Math.min(this.radius, this.curRadius + 70 * dt) : this.radius;
     // 読み込む範囲は、地球中心座標（建物データの座標）で指定する
     const centerEcef = this.tmpEcef.copy(this.camera.position).applyMatrix4(this.frame.localToEcef);
     for (const r of this.renderers) {
-      r.region.sphere.set(centerEcef, this.radius);
+      r.region.sphere.set(centerEcef, this.curRadius);
       r.tiles.update();
+    }
+    this.updateFar();
+  }
+
+  private readonly tmpC = new THREE.Vector3();
+  /** 遠いタイルは軽い材質・影を落とさない、近いタイルは元の材質。1 コマに 24 枚ずつ、順番に見直す */
+  private updateFar() {
+    if (this.styledDirty) { this.styledList = [...this.styled]; this.styledDirty = false; }
+    const list = this.styledList;
+    if (list.length === 0) return;
+    const cam = this.camera.position;
+    for (let n = 0; n < 24; n++) {
+      const mesh = list[this.styledCursor++ % list.length];
+      if (!mesh.parent || !this.styled.has(mesh)) continue;
+      const g = mesh.geometry;
+      if (!g.boundingSphere) g.computeBoundingSphere();
+      const bs = g.boundingSphere!;
+      mesh.updateWorldMatrix(true, false);
+      this.tmpC.copy(bs.center).applyMatrix4(mesh.matrixWorld);
+      const d = this.tmpC.distanceTo(cam) - bs.radius;
+      const far = mesh.userData.far === true;
+      if (!far && d > this.farOn) {
+        mesh.userData.far = true;
+        mesh.material = farFacadeMaterial(mesh.userData.idName ?? null);
+        mesh.castShadow = false;
+      } else if (far && d < this.farOff) {
+        mesh.userData.far = false;
+        mesh.material = facadeMaterial(mesh.userData.idName ?? null);
+        mesh.castShadow = true;
+      }
     }
   }
 
