@@ -78,8 +78,9 @@ function* walk(line: RoadLine, start: number, step: number, jitter: () => number
   }
 }
 
-export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { treeRadius: number }): Furniture {
-  const grid = new SegGrid(lines);
+export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { others?: RoadLine[] } = {}): Furniture {
+  // となりのタイルの道も「車道に入っているか」の判定に使う（タイルの境目で、他の道の上に置かないため）
+  const grid = new SegGrid(opts.others ? lines.concat(opts.others) : lines);
   const trees: TreeInst[] = [];
   const lamps: LampInst[] = [];
   const hedges: PropInst[] = [];
@@ -87,7 +88,6 @@ export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { tr
   const vends: PropInst[] = [];
   const shrubs: PropInst[] = [];
   const tufts: PropInst[] = [];
-  const R2 = opts.treeRadius * opts.treeRadius;
 
   for (const line of lines) {
     if (line.rank < 2 || line.length < 20) continue;
@@ -108,7 +108,6 @@ export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { tr
         for (const sg of [1, -1]) {
           const x = q.x + -q.dz * sg * (hr + Math.min(1.3, sw * 0.5));
           const z = q.z + q.dx * sg * (hr + Math.min(1.3, sw * 0.5));
-          if (x * x + z * z > R2) continue;
           if (r() > treeLine * 0.8) continue; // 木は絵の板（軽い）になったので、本数を増やす
           if (grid.blocked(x, z, line)) continue;
           trees.push({ x, z, rot: r() * 6.283, scale: 0.8 + r() * 0.55, tint: r() });
@@ -118,7 +117,7 @@ export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { tr
     // 歩道ぞいの小物: 生け垣（植え込み）・低木・草むら・自動販売機・道路標識（建物に埋もれないよう歩道の上に置く）
     {
       const rp = rng(line.id + 777);
-      const ok = (x: number, z: number) => x * x + z * z <= R2 && !grid.blocked(x, z, line);
+      const ok = (x: number, z: number) => !grid.blocked(x, z, line);
       for (const sg of [1, -1]) {
         const at = (q: { x: number; z: number; dx: number; dz: number }, off: number) => ({ x: q.x - q.dz * sg * off, z: q.z + q.dx * sg * off });
         // 生け垣

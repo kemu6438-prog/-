@@ -70,8 +70,18 @@ function buildLook(idRaw: N): Out {
   const isGround: N = float(1.0).sub(step(floorH, y)); // 1 階
   const fv: N = fract(y.sub(floorH).div(floorH.mul(FLOORS)));
   const vg: N = clamp(y.div(floorH), 0.0, 1.0);
+  // 窓の量: 現実の建物は、窓がある面は一部で、多くの面は壁。窓のある面でも、窓は一か所に固まっている。
+  // 面ごとに窓あり/なしを決める（同じ壁は同じ。向きで決めるので、反対側の壁も同じになる）。会社のビル（事務所の 2 割）は窓が多い
+  const faceKey: N = floor(tangent.x.mul(4.0).add(0.5)).mul(13.1).add(floor(tangent.y.mul(4.0).add(0.5)).mul(7.7));
+  const faceH: N = hash(id.mul(1.7).add(faceKey).add(3.3));
+  const dense: N = step(0.8, hash(id.add(5.5))).mul(float(1.0).sub(step(0.5, s)));
+  const notCurtain: N = float(1.0).sub(step(1.5, s).mul(step(s, 2.5)));
+  const isBlank: N = step(faceH, 0.42).mul(notCurtain).mul(float(1.0).sub(dense));
+  const blankKind: N = float(6.0).add(step(3.5, s)).add(step(4.5, s)); // 一般 6 / レンガ 7 / 石 8
+  const sUp: N = mix(mix(s, blankKind, isBlank), float(9.0), dense);
   const kBase: N = s.mul(KIND_BLOCK);
-  const rowUpper: N = kBase.add(GUTTER).add(float(1.0).sub(fv).mul(UPPER_H));
+  const kUp: N = sUp.mul(KIND_BLOCK);
+  const rowUpper: N = kUp.add(GUTTER).add(float(1.0).sub(fv).mul(UPPER_H));
   const rowGround: N = kBase.add(UPPER_BLOCK + GUTTER).add(float(1.0).sub(vg).mul(GROUND_H));
   const row: N = mix(rowUpper, rowGround, isGround);
   const uv: N = vec2(u, float(1.0).sub(row.div(ATLAS_H)));

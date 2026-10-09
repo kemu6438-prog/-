@@ -9,7 +9,7 @@ import type { LocalFrame } from "../core/geo";
 import { hash21, vnoise, type N } from "../render/noise";
 import { TEX } from "../render/assets";
 import {
-  ZOOM, analyzeNodes, fetchRoadTile, latToTileY, lonToTileX, parseRoadLayer, type RoadLine, type RoadNode,
+  ZOOM, analyzeNodes, fetchRoadTile, latToTileY, lonToTileX, parseRoadLayer, tileXToLon, tileYToLat, type RoadLayerLike, type RoadLine, type RoadNode,
 } from "./roadData";
 import { buildRibbon, roadExtra, sidewalkExtra, type Ribbon } from "./roadGeometry";
 import { placeFurniture, type Furniture, type TreeInst } from "./roadFurniture";
@@ -77,13 +77,14 @@ function roadMaterial(level: number): THREE.MeshStandardNodeMaterial {
   const aaV: N = max(abs(dFdx(v)).add(abs(dFdy(v))), 0.003);
   const aaS: N = max(abs(dFdx(dS)).add(abs(dFdy(dS))), 0.003).min(abs(dFdx(dE)).add(abs(dFdy(dE))).max(0.003)).max(0.003);
   const hasLines: N = step(1.5, rank);
+  const hasCentre: N = step(0.5, rank); // 脇道（幅員区分 1）にも中央の破線、区分 0 には外側線だけ
   const big: N = step(2.5, rank);
   // 外側線
-  const edgeL: N = cover(abs(u).sub(hr.sub(0.4)), 0.15, aaU).mul(hasLines);
+  const edgeL: N = cover(abs(u).sub(hr.sub(0.4)), 0.15, aaU);
   // 中央線: 中くらいの道は白の破線、広い道は白の二重線
   const dashed: N = cover(u, 0.15, aaU).mul(dash(v, 10.0, 0.5, aaV));
   const dbl: N = cover(abs(u).sub(0.17), 0.14, aaU);
-  const centre: N = mix(dashed, dbl, big).mul(hasLines);
+  const centre: N = mix(dashed, dbl, big).mul(hasCentre);
   // 車線の境目（破線）
   const nl: N = floor(hr.div(3.5));
   const kk: N = (abs(u).div(3.5) as N).add(0.5).floor();
@@ -247,6 +248,8 @@ type CullInfo = {
   items: Array<{ x: number; z: number }>; alive: Uint8Array; version: number; margin: number;
   /** 建物に近すぎたとき、この距離（m）まで動かして置き直す（0 なら動かさず消す） */
   nudge: number;
+  /** 余白を、物の大きさ（scale）倍にするか */
+  byScale: boolean;
   place: (it: { x: number; z: number }, m: THREE.Matrix4) => void;
 };
 const HIDE = new THREE.Matrix4().makeScale(0, 0, 0).setPosition(0, -500, 0);
@@ -258,7 +261,7 @@ function chunkedInstances<T extends { x: number; z: number }>(
   mat: THREE.Material,
   items: T[],
   place: (it: T, m: THREE.Matrix4) => void,
-  opts: { nudge?: number; cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number; receive?: boolean; margin?: number } = {},
+  opts: { nudge?: number; byScale?: boolean; cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number; receive?: boolean; margin?: number } = {},
 ) {
   const cell = opts.cell ?? 250;
   const bins = new Map<string, T[]>();
@@ -286,7 +289,7 @@ function chunkedInstances<T extends { x: number; z: number }>(
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
     // 建物の足あとと重なった物を後から消すための情報
-    mesh.userData.cull = { items: list, alive: new Uint8Array(list.length).fill(1), version: -1, margin: opts.margin ?? 0.5, nudge: opts.nudge ?? 0, place: place as (it: { x: number; z: number }, m: THREE.Matrix4) => void } satisfies CullInfo;
+    mesh.userData.cull = { items: list, alive: new Uint8Array(list.length).fill(1), version: -1, margin: opts.margin ?? 0.5, nudge: opts.nudge ?? 0, byScale: opts.byScale ?? false, place: place as (it: { x: number; z: number }, m: THREE.Matrix4) => void } satisfies CullInfo;
     mesh.castShadow = !!opts.cast;
     mesh.receiveShadow = opts.receive ?? true; // 草むらなど小さい物は影を受けなくてよい（影の見え方が変わらず、1 画素あたりの計算が減る）
     parent.add(mesh);
@@ -300,11 +303,34 @@ type Lod = { meshes: THREE.InstancedMesh[]; draw: number; shadow: number };
 
 export type RoadStats = { tiles: number; failedTiles: number; lines: number; nodes: number; trees: number; lamps: number; triangles: number };
 
+/** 道のタイル 1 枚ぶんの、作った物 */
+type TileRec = {
+  key: string;
+  tx: number;
+  ty: number;
+  /** タイルの中心（画面の座標） */
+  cx: number;
+  cz: number;
+  group: THREE.Group;
+  lines: RoadLine[];
+  nodes: RoadNode[];
+  /** 木・街灯などの入れ物（カメラが近づいてから作る。遠くなったら捨てる） */
+  fgroup: THREE.Group | null;
+  lods: Lod[];
+  trees: number;
+  lamps: number;
+  tris: number;
+};
+
+type Fetched = { state: "pending" } | { state: "ready"; layer: RoadLayerLike | null } | { state: "failed"; at: number };
+
+/**
+ * 道・歩道・木などを、カメラの近くのタイルだけ読み込んで置く。
+ * 以前は「最初の場所の周り」を 1 回だけ作っていたので、遠くまで走ると道も木も無くなっていた。
+ * 今は、カメラが動くたびに、近づいたタイルを 1 コマに 1 枚ずつ作り、遠くなったタイルは捨てる。
+ */
 export class Roads {
   readonly group = new THREE.Group();
-  /** 読み込んだ道（自動運転が使う） */
-  lines: RoadLine[] = [];
-  nodes: RoadNode[] = [];
   stats: RoadStats = { tiles: 0, failedTiles: 0, lines: 0, nodes: 0, trees: 0, lamps: 0, triangles: 0 };
   private readonly mats = [0, 1, 2, 3, 4].map((l) => roadMaterial(l));
   private readonly walkMat = sidewalkMaterial();
@@ -320,20 +346,39 @@ export class Roads {
   private readonly treeMat: THREE.MeshStandardNodeMaterial;
   private readonly metalMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.3, vertexColors: true });
   private token = 0;
+  /** 道を読み込む範囲（カメラから m） */
   radius = 1500;
   treeRadius = 800;
-  private lods: Lod[] = [];
   /** 測定用: 木・街灯などを全部隠す */
   hideInstanced = false;
 
+  private frame: LocalFrame | null = null;
+  private groundH = 0;
+  private readonly tiles = new Map<string, TileRec>();
+  private readonly fetched = new Map<string, Fetched>();
+  private readonly centres = new Map<string, [number, number]>();
+  private readyQ: string[] = [];
+  private pending = 0;
+  private failed = 0;
+  private idSeq = 0;
+  private lastPlan = -1e9;
+  private lastLog = -1e9;
+  private logged = 0;
+  private flat: { mesh: THREE.InstancedMesh; lod: Lod }[] = [];
+  private flatDirty = false;
+  private linesCache: RoadLine[] = [];
+  private nodesCache: RoadNode[] = [];
+  private linesDirty = false;
+  /** 運転が、あとから増えた道を受け取るための列 */
+  private newLines: RoadLine[] = [];
+
   constructor(private readonly log: (m: string) => void, private readonly tileUrlOf?: (z: number, x: number, y: number) => string) {
     this.group.name = "roads";
-    // 葉: 色むら（葉の細かい明暗）
+    // 生け垣用の材質: 葉の色むら（頂点の緑の部分だけ）
     const tm = new THREE.MeshStandardNodeMaterial({ roughness: 0.85, metalness: 0, vertexColors: true });
     const pw: N = positionWorld;
     const leaf: N = vnoise(vec2(pw.x.add(pw.y.mul(0.7)), pw.z.add(pw.y.mul(0.4))).mul(2.2)).mul(0.5)
       .add(vnoise(vec2(pw.x, pw.z.add(pw.y)).mul(7.0)).mul(0.35)).add(0.55);
-    // 色合いの個体差は、葉の部分（緑の頂点）にだけ掛ける。幹は茶色のまま
     const vc: N = vertexColor().rgb;
     const crown: N = step(1.15, vc.g.div(vc.r.max(0.01)));
     const tint: N = attribute("tint", "float");
@@ -342,32 +387,62 @@ export class Roads {
     this.treeMat = tm;
   }
 
+  /** 読み込んだ道（自動運転が使う） */
+  get lines(): RoadLine[] { this.refreshLines(); return this.linesCache; }
+  get nodes(): RoadNode[] { this.refreshLines(); return this.nodesCache; }
+  /** あとから増えた道を取り出す（取り出すと空になる） */
+  takeNewLines(): RoadLine[] {
+    if (this.newLines.length === 0) return this.newLines;
+    const a = this.newLines;
+    this.newLines = [];
+    return a;
+  }
+  private refreshLines() {
+    if (!this.linesDirty) return;
+    this.linesDirty = false;
+    this.linesCache = [];
+    this.nodesCache = [];
+    for (const t of this.tiles.values()) {
+      for (const l of t.lines) this.linesCache.push(l);
+      for (const n of t.nodes) this.nodesCache.push(n);
+    }
+  }
+
   private get treeDraw() {
     return this.treeRadius > 500 ? 550 : 380;
+  }
+  /** この距離（m）より近いタイルには、木などを置く / これより遠くなったら捨てる */
+  private get furnIn() { return this.treeDraw + 300; }
+  private get furnOut() { return this.furnIn + 500; }
+
+  private refreshFlat() {
+    if (!this.flatDirty) return;
+    this.flatDirty = false;
+    this.flat = [];
+    for (const t of this.tiles.values()) for (const l of t.lods) for (const m of l.meshes) this.flat.push({ mesh: m, lod: l });
   }
 
   /** 毎コマ呼ぶ。カメラから遠い塊は描かず、近い塊だけ影を落とす */
   updateLod(cam: THREE.Vector3) {
-    for (const l of this.lods) {
-      for (const m of l.meshes) {
-        const b = m.boundingSphere;
-        if (!b) continue;
-        const d = Math.hypot(b.center.x - cam.x, b.center.z - cam.z) - b.radius;
-        m.visible = !this.hideInstanced && d < l.draw;
-        if (l.shadow > 0) m.castShadow = d < l.shadow;
-      }
+    this.refreshFlat();
+    for (const { mesh: m, lod: l } of this.flat) {
+      const b = m.boundingSphere;
+      if (!b) continue;
+      const d = Math.hypot(b.center.x - cam.x, b.center.z - cam.z) - b.radius;
+      m.visible = !this.hideInstanced && d < l.draw;
+      if (l.shadow > 0) m.castShadow = d < l.shadow;
     }
   }
 
   private cullCursor = 0;
-  /** 建物の足あとの中に入ってしまった物（木など）を消す。近くの塊だけを、1 コマあたり少しずつ点検する */
+  /** 建物の足あとの中に入ってしまった物（木など）を、動かすか消す。近くの塊だけを、1 コマあたり少しずつ点検する */
   cullByFootprints(fp: Footprints, cam: THREE.Vector3, budgetMs = 1.5) {
+    this.refreshFlat();
     const t0 = performance.now();
-    const all: THREE.InstancedMesh[] = [];
-    for (const l of this.lods) for (const m of l.meshes) all.push(m);
+    const all = this.flat;
     const N = all.length;
     for (let step = 0; step < N; step++) {
-      const mesh = all[(this.cullCursor + step) % N];
+      const mesh = all[(this.cullCursor + step) % N].mesh;
       const c = mesh.userData.cull as CullInfo | undefined;
       if (!c || c.version === fp.version) continue;
       const b = mesh.boundingSphere;
@@ -376,9 +451,10 @@ export class Roads {
       for (let i = 0; i < c.items.length; i++) {
         if (!c.alive[i]) continue;
         const it = c.items[i];
-        if (fp.near(it.x, it.z, c.margin)) {
+        const mg = c.byScale ? c.margin * ((it as { scale?: number }).scale ?? 1) : c.margin;
+        if (fp.near(it.x, it.z, mg)) {
           changed = true;
-          if (c.nudge > 0 && this.nudge(fp, it, c)) {
+          if (c.nudge > 0 && this.nudge(fp, it, c, mg)) {
             c.place(it, this.tmpM);
             mesh.setMatrixAt(i, this.tmpM);
             this.moved++;
@@ -396,12 +472,12 @@ export class Roads {
   }
   private readonly tmpM = new THREE.Matrix4();
   /** 建物に近すぎる物を、近い順に 16 方向へ動かして、空いている所に置き直す。置けたら true */
-  private nudge(fp: Footprints, it: { x: number; z: number }, c: CullInfo): boolean {
+  private nudge(fp: Footprints, it: { x: number; z: number }, c: CullInfo, margin: number): boolean {
     for (let r = 0.6; r <= c.nudge + 1e-6; r += 0.6) {
       for (let k = 0; k < 16; k++) {
         const a = (k / 16) * Math.PI * 2;
         const x = it.x + Math.cos(a) * r, z = it.z + Math.sin(a) * r;
-        if (!fp.near(x, z, c.margin)) { it.x = x; it.z = z; return true; }
+        if (!fp.near(x, z, margin)) { it.x = x; it.z = z; return true; }
       }
     }
     return false;
@@ -410,78 +486,186 @@ export class Roads {
   culled = 0;
   moved = 0;
 
+  private disposeGroup(g: THREE.Object3D) {
+    g.removeFromParent();
+    g.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.geometry.dispose();
+      (mesh as unknown as THREE.InstancedMesh).dispose?.();
+    });
+  }
+
   clear() {
     this.token++;
     this.culled = 0;
     this.moved = 0;
-    this.lods = [];
-    for (const c of [...this.group.children]) {
-      this.group.remove(c);
-      c.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (mesh.isMesh && mesh.geometry !== this.treeGeoA && mesh.geometry !== this.treeGeoB && mesh.geometry !== this.shrubGeo && mesh.geometry !== this.tuftGeo && mesh.geometry !== this.lampGeo && mesh.geometry !== this.hedgeGeo && mesh.geometry !== this.signGeo && mesh.geometry !== this.vendGeo) mesh.geometry.dispose();
-      });
+    for (const t of this.tiles.values()) { this.disposeGroup(t.group); if (t.fgroup) this.disposeGroup(t.fgroup); }
+    this.tiles.clear();
+    this.fetched.clear();
+    this.centres.clear();
+    this.readyQ = [];
+    this.pending = 0;
+    this.failed = 0;
+    this.flat = [];
+    this.flatDirty = false;
+    this.linesCache = [];
+    this.nodesCache = [];
+    this.linesDirty = false;
+    this.newLines = [];
+    this.lastPlan = -1e9;
+    this.frame = null;
+    this.stats = { tiles: 0, failedTiles: 0, lines: 0, nodes: 0, trees: 0, lamps: 0, triangles: 0 };
+  }
+
+  /** 場所が決まったとき。あとは update() が、カメラの近くのタイルを読み込んでいく */
+  begin(frame: LocalFrame, groundH: number) {
+    this.clear();
+    this.frame = frame;
+    this.groundH = groundH;
+  }
+
+  private tileCentre(tx: number, ty: number): [number, number] {
+    const key = `${tx},${ty}`;
+    let c = this.centres.get(key);
+    if (!c) {
+      const v = this.frame!.toLocal(tileYToLat(ty + 0.5, ZOOM), tileXToLon(tx + 0.5, ZOOM), this.groundH, new THREE.Vector3());
+      c = [v.x, v.z];
+      this.centres.set(key, c);
+    }
+    return c;
+  }
+
+  /** 毎コマ呼ぶ（中で間引く）。カメラの近くのタイルを読み込み、1 コマに 1 つだけ作る */
+  update(cam: THREE.Vector3, now: number) {
+    if (!this.frame) return;
+    if (now - this.lastPlan > 400) { this.lastPlan = now; this.plan(cam, now); }
+    this.buildOne(cam);
+  }
+
+  private plan(cam: THREE.Vector3, now: number) {
+    const frame = this.frame!;
+    const g = frame.toGeodetic(cam);
+    const cx = Math.floor(lonToTileX(g.lon, ZOOM)), cy = Math.floor(latToTileY(g.lat, ZOOM));
+    const tileM = (40075016 * Math.cos((g.lat * Math.PI) / 180)) / 2 ** ZOOM;
+    const n = Math.max(1, Math.ceil(this.radius / tileM)) + 1;
+    const want: { key: string; tx: number; ty: number; d: number }[] = [];
+    for (let dy = -n; dy <= n; dy++) {
+      for (let dx = -n; dx <= n; dx++) {
+        const tx = cx + dx, ty = cy + dy;
+        const [x, z] = this.tileCentre(tx, ty);
+        const d = Math.hypot(x - cam.x, z - cam.z);
+        if (d > this.radius + tileM * 0.5) continue;
+        want.push({ key: `${tx},${ty}`, tx, ty, d });
+      }
+    }
+    want.sort((a, b) => a.d - b.d);
+    for (const w of want) {
+      if (this.pending >= 4) break;
+      const f = this.fetched.get(w.key);
+      if (f && !(f.state === "failed" && now - f.at > 20000)) continue;
+      this.fetchTile(w.key, w.tx, w.ty);
+    }
+    // 遠くなったタイルを捨てる
+    for (const t of [...this.tiles.values()]) {
+      const d = Math.hypot(t.cx - cam.x, t.cz - cam.z);
+      if (d > this.radius + tileM * 1.3) this.dropTile(t);
     }
   }
 
-  async load(frame: LocalFrame, lat: number, lon: number, groundH: number) {
-    const my = ++this.token;
-    const t0 = performance.now();
-    const cx = Math.floor(lonToTileX(lon, ZOOM));
-    const cy = Math.floor(latToTileY(lat, ZOOM));
-    const tileM = (40075016 * Math.cos((lat * Math.PI) / 180)) / 2 ** ZOOM;
-    const n = Math.max(1, Math.ceil(this.radius / tileM));
-    const jobs: [number, number][] = [];
-    for (let dy = -n; dy <= n; dy++) for (let dx = -n; dx <= n; dx++) jobs.push([cx + dx, cy + dy]);
-    // 近い順に並べ、6 つずつ同時に読み込む
-    jobs.sort((a, b) => Math.hypot(a[0] - cx, a[1] - cy) - Math.hypot(b[0] - cx, b[1] - cy));
+  private fetchTile(key: string, tx: number, ty: number) {
+    const my = this.token;
+    this.fetched.set(key, { state: "pending" });
+    this.pending++;
+    fetchRoadTile(tx, ty, this.tileUrlOf).then(
+      (layer) => {
+        if (my !== this.token) return;
+        this.pending--;
+        this.fetched.set(key, { state: "ready", layer });
+        this.readyQ.push(key);
+      },
+      (e: Error) => {
+        if (my !== this.token) return;
+        this.pending--;
+        this.failed++;
+        this.fetched.set(key, { state: "failed", at: performance.now() });
+        if (this.failed <= 2) this.log(`道路タイルの読み込み失敗: ${e.message}`);
+      },
+    );
+  }
+
+  private dropTile(t: TileRec) {
+    this.disposeGroup(t.group);
+    if (t.fgroup) this.disposeGroup(t.fgroup);
+    this.tiles.delete(t.key);
+    this.fetched.delete(t.key); // 戻ってきたら、また読み込む
+    this.linesDirty = true;
+    this.flatDirty = true;
+    this.refreshStats();
+  }
+
+  private refreshStats() {
+    let lines = 0, nodes = 0, trees = 0, lamps = 0, tris = 0;
+    for (const t of this.tiles.values()) { lines += t.lines.length; nodes += t.nodes.length; trees += t.trees; lamps += t.lamps; tris += t.tris; }
+    this.stats = { tiles: this.tiles.size, failedTiles: this.failed, lines, nodes, trees, lamps, triangles: tris };
+  }
+
+  /** 1 コマに 1 つだけ、重い作業をする: ① 届いたタイルを道の面にする ② 近いタイルに木などを置く ③ 遠くの木などを捨てる */
+  private buildOne(cam: THREE.Vector3) {
+    if (this.readyQ.length > 0) {
+      let bi = -1, bd = Infinity;
+      for (let i = 0; i < this.readyQ.length; i++) {
+        const [tx, ty] = this.readyQ[i].split(",").map(Number);
+        const [x, z] = this.tileCentre(tx, ty);
+        const d = Math.hypot(x - cam.x, z - cam.z);
+        if (d < bd) { bd = d; bi = i; }
+      }
+      const key = this.readyQ.splice(bi, 1)[0];
+      const f = this.fetched.get(key);
+      if (f && f.state === "ready") {
+        const [tx, ty] = key.split(",").map(Number);
+        this.buildTile(key, tx, ty, f.layer);
+        return;
+      }
+    }
+    let best: TileRec | null = null, bestD = Infinity;
+    for (const t of this.tiles.values()) {
+      if (t.fgroup) continue;
+      const d = Math.hypot(t.cx - cam.x, t.cz - cam.z);
+      if (d < this.furnIn && d < bestD) { best = t; bestD = d; }
+    }
+    if (best) { this.buildFurniture(best); return; }
+    for (const t of this.tiles.values()) {
+      if (!t.fgroup) continue;
+      if (Math.hypot(t.cx - cam.x, t.cz - cam.z) > this.furnOut) {
+        this.disposeGroup(t.fgroup);
+        t.fgroup = null;
+        t.lods = [];
+        t.trees = 0; t.lamps = 0;
+        this.flatDirty = true;
+        this.refreshStats();
+        return;
+      }
+    }
+  }
+
+  /** タイル 1 枚の道・歩道の面を作る */
+  private buildTile(key: string, tx: number, ty: number, layer: RoadLayerLike | null) {
+    const frame = this.frame!;
     const tmp = new THREE.Vector3();
     const toXZ = (lo: number, la: number): [number, number] => {
-      frame.toLocal(la, lo, groundH, tmp);
+      frame.toLocal(la, lo, this.groundH, tmp);
       return [tmp.x, tmp.z];
     };
-    let id = 0;
-    const lines: RoadLine[] = [];
-    let failed = 0;
-    let layerSeen = 0;
-    const queue = [...jobs];
-    const worker = async () => {
-      for (let job = queue.shift(); job; job = queue.shift()) {
-        try {
-          const layer = await fetchRoadTile(job[0], job[1], this.tileUrlOf);
-          if (my !== this.token) return;
-          if (!layer) continue;
-          layerSeen++;
-          lines.push(...parseRoadLayer(layer, job[0], job[1], toXZ, () => id++));
-        } catch (e) {
-          failed++;
-          if (failed <= 2) this.log(`道路タイルの読み込み失敗: ${(e as Error).message}`);
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: 6 }, worker));
-    if (my !== this.token) return;
-    // 遠すぎる線は捨てる（読み込み範囲の外側）
-    const R2 = this.radius * this.radius * 1.2;
-    // 始点だけでなく、どれか 1 つでも点が範囲内にある線を残す（始点が遠くても近くを通る道が消えないように）
-    const near = lines.filter((l) => {
-      const q = l.pts;
-      for (let i = 0; i + 1 < q.length; i += 2) if (q[i] * q[i] + q[i + 1] * q[i + 1] < R2) return true;
-      return false;
-    });
-    const nodes = analyzeNodes(near);
-    this.lines = near;
-    this.nodes = nodes;
-    this.stats = { ...this.stats, tiles: layerSeen, failedTiles: failed, lines: near.length, nodes: nodes.length };
-    this.log(`道路データ: タイル ${layerSeen}/${jobs.length}（失敗 ${failed}） / 道 ${near.length} 本 / 交差点 ${nodes.length}`);
-    if (near.length === 0) {
-      this.log("道路データが 0 件でした（通信できないか、データが空）");
-      return;
-    }
-
-    // --- 道（幅員区分ごとに別の面にして、太い道ほど手前に描く） ---
+    const lines = layer ? parseRoadLayer(layer, tx, ty, toXZ, () => this.idSeq++) : [];
+    const nodes = analyzeNodes(lines);
+    const [cx, cz] = this.tileCentre(tx, ty);
+    const group = new THREE.Group();
+    group.name = `road-tile-${key}`;
     let tris = 0;
-    const addRibbon = (rb: Ribbon, mat: THREE.Material, y: number, order: number) => {
+    // 描く順番: 歩道 → 幅員区分 0 → … → 4。タイルごとにも固定の順番（座標から決める）を付けて、重なる所で入れ替わらないようにする
+    const order = (((tx % 30) + 30) % 30) * 30 + (((ty % 30) + 30) % 30);
+    const addRibbon = (rb: Ribbon, mat: THREE.Material, ord: number) => {
       if (rb.vertexCount === 0) return;
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(rb.position, 3));
@@ -493,83 +677,82 @@ export class Roads {
       const mesh = new THREE.Mesh(g, mat);
       mesh.receiveShadow = true;
       mesh.frustumCulled = true;
-      mesh.renderOrder = order;
-      mesh.position.y = 0;
-      this.group.add(mesh);
+      mesh.renderOrder = ord;
+      group.add(mesh);
       tris += rb.index.length / 3;
-      void y;
     };
-    // 道を 500 m 四方ごとの塊に分ける（画面の外の塊は描かない。1 枚の巨大な面だと、後ろ向きでも毎回全部を処理してしまう）
-    const CELL = 500;
-    const cells = new Map<string, RoadLine[]>();
-    for (const l of near) {
-      const k = `${Math.floor(l.pts[0] / CELL)},${Math.floor(l.pts[1] / CELL)}`;
-      const a = cells.get(k);
-      if (a) a.push(l);
-      else cells.set(k, [l]);
-    }
-    let cellNo = 0;
-    for (const cellLines of cells.values()) {
-      cellNo++;
-      // 描く順番: 歩道 → 幅員区分 0 → … → 4（箱ごとにも固定の順番を付けて、重なる所で入れ替わらないようにする）
-      addRibbon(buildRibbon(cellLines, sidewalkExtra, 0.01), this.walkMat, 0.01, 100 + cellNo);
+    if (lines.length > 0) {
+      addRibbon(buildRibbon(lines, sidewalkExtra, 0.01), this.walkMat, 100 + order);
       for (let r = 0; r <= 4; r++) {
-        const ls = cellLines.filter((l) => l.rank === r);
-        addRibbon(buildRibbon(ls, roadExtra, 0.02 + r * 0.004), this.mats[r], 0, 100 + (r + 1) * 1000 + cellNo);
+        const ls = lines.filter((l) => l.rank === r);
+        addRibbon(buildRibbon(ls, roadExtra, 0.02 + r * 0.004), this.mats[r], 100 + (r + 1) * 1000 + order);
       }
     }
+    this.group.add(group);
+    const rec: TileRec = { key, tx, ty, cx, cz, group, lines, nodes, fgroup: null, lods: [], trees: 0, lamps: 0, tris };
+    this.tiles.set(key, rec);
+    for (const l of lines) this.newLines.push(l);
+    this.linesDirty = true;
+    this.refreshStats();
+    const now = performance.now();
+    if (now - this.lastLog > 4000 && this.readyQ.length === 0 && this.pending === 0) {
+      this.lastLog = now;
+      this.log(`道路データ: タイル ${this.tiles.size} 枚 / 道 ${this.stats.lines} 本 / 交差点 ${this.stats.nodes}（失敗 ${this.failed}）`);
+    }
+  }
 
-    // --- 道ばたの物 ---
-    const f: Furniture = placeFurniture(near, nodes, { treeRadius: this.treeRadius });
-    this.lods = [];
-    const Yax = new THREE.Vector3(0, 1, 0);
-    const placeTree = (t: TreeInst, m: THREE.Matrix4) => {
-      m.compose(new THREE.Vector3(t.x, 0, t.z), new THREE.Quaternion().setFromAxisAngle(Yax, t.rot), new THREE.Vector3(t.scale, t.scale * (0.9 + t.tint * 0.25), t.scale));
+  /** タイル 1 枚の、木・街灯・生け垣・低木・草むら・標識・自販機を置く */
+  private buildFurniture(t: TileRec) {
+    const others: RoadLine[] = [];
+    for (const o of this.tiles.values()) {
+      if (o !== t && Math.abs(o.tx - t.tx) <= 1 && Math.abs(o.ty - t.ty) <= 1) for (const l of o.lines) others.push(l);
+    }
+    const f: Furniture = placeFurniture(t.lines, t.nodes, { others });
+    const fg = new THREE.Group();
+    fg.name = `road-furniture-${t.key}`;
+    const lods: Lod[] = [];
+    const Y = new THREE.Vector3(0, 1, 0);
+    const placeTree = (tr: TreeInst, m: THREE.Matrix4) => {
+      m.compose(new THREE.Vector3(tr.x, 0, tr.z), new THREE.Quaternion().setFromAxisAngle(Y, tr.rot), new THREE.Vector3(tr.scale, tr.scale * (0.9 + tr.tint * 0.25), tr.scale));
     };
     const tintAttr = (g: THREE.BufferGeometry, list: { tint: number }[]) => {
-      g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1));
+      g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (x) => x.tint), 1));
     };
-    // 街路樹は葉の形が違う 2 種類。建物に近すぎる木は、少しずらして置き直す（置けなければ消す）
+    // 街路樹は葉の形が違う 2 種類。建物（葉の広がり = 木の大きさ × 約 2.4 m）に近すぎる木は、少しずらして置き直す（置けなければ消す）
     const treeMeshes: THREE.InstancedMesh[] = [];
-    for (const [geo, pick] of [[this.treeGeoA, (t: TreeInst) => t.tint < 0.5], [this.treeGeoB, (t: TreeInst) => t.tint >= 0.5]] as const) {
-      treeMeshes.push(...chunkedInstances(this.group, geo, this.cardMat, f.trees.filter(pick), placeTree, {
-        cast: true, margin: 1.3, nudge: 2.4, receive: false, extra: tintAttr,
+    for (const [geo, pick] of [[this.treeGeoA, (x: TreeInst) => x.tint < 0.5], [this.treeGeoB, (x: TreeInst) => x.tint >= 0.5]] as const) {
+      treeMeshes.push(...chunkedInstances(fg, geo, this.cardMat, f.trees.filter(pick), placeTree, {
+        cast: true, margin: 2.4, byScale: true, nudge: 1.4, receive: false, extra: tintAttr,
       }));
     }
-    this.lods.push({ draw: this.treeDraw, shadow: 220, meshes: treeMeshes });
-    this.lods.push({ draw: 350, shadow: 0, meshes: chunkedInstances(this.group, this.lampGeo, this.metalMat, f.lamps, (l, m) => {
-      m.compose(new THREE.Vector3(l.x, 0, l.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), l.rot), new THREE.Vector3(1, 1, 1));
+    lods.push({ draw: this.treeDraw, shadow: 220, meshes: treeMeshes });
+    lods.push({ draw: 350, shadow: 0, meshes: chunkedInstances(fg, this.lampGeo, this.metalMat, f.lamps, (l, m) => {
+      m.compose(new THREE.Vector3(l.x, 0, l.z), new THREE.Quaternion().setFromAxisAngle(Y, l.rot), new THREE.Vector3(1, 1, 1));
     }, { margin: 0.2 }) });
-    // 生け垣・標識・自動販売機（近くだけ描く）
-    const Y = new THREE.Vector3(0, 1, 0);
-    this.lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(this.group, this.hedgeGeo, this.treeMat, f.hedges, (h, m) => {
+    lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(fg, this.hedgeGeo, this.treeMat, f.hedges, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, 0.85 + h.tint * 0.4, 1));
-    }, {
-      extra: (g, list) => {
-        g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1));
-      },
-      cell: 200,
-      margin: 0.6,
-    }) });
-    this.lods.push({ draw: 240, shadow: 0, meshes: chunkedInstances(this.group, this.shrubGeo, this.cardMat, f.shrubs, (h, m) => {
+    }, { extra: tintAttr, cell: 200, margin: 0.6 }) });
+    lods.push({ draw: 240, shadow: 0, meshes: chunkedInstances(fg, this.shrubGeo, this.cardMat, f.shrubs, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale * (0.8 + h.tint * 0.4), h.scale));
     }, { extra: tintAttr, cell: 200, receive: false, margin: 0.8, nudge: 1.4 }) });
-    this.lods.push({ draw: 170, shadow: 0, meshes: chunkedInstances(this.group, this.tuftGeo, this.cardMat, f.tufts, (h, m) => {
+    lods.push({ draw: 170, shadow: 0, meshes: chunkedInstances(fg, this.tuftGeo, this.cardMat, f.tufts, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale, h.scale));
     }, { extra: tintAttr, cell: 160, receive: false, margin: 0.3, nudge: 1.0 }) });
-    this.lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(this.group, this.signGeo, this.metalMat, f.signs, (p, m) => {
+    lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(fg, this.signGeo, this.metalMat, f.signs, (p, m) => {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
     }, { cell: 200, margin: 0.2 }) });
-    this.lods.push({ draw: 200, shadow: 0, meshes: chunkedInstances(this.group, this.vendGeo, this.metalMat, f.vends, (p, m) => {
+    lods.push({ draw: 200, shadow: 0, meshes: chunkedInstances(fg, this.vendGeo, this.metalMat, f.vends, (p, m) => {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
     }, { cell: 200, margin: 0 }) });
     const triOf = (g: THREE.BufferGeometry, k: number) => (g.index ? g.index.count : g.getAttribute("position").count) / 3 * k;
-    tris += triOf(this.treeGeoA, f.trees.length) + triOf(this.lampGeo, f.lamps.length)
+    t.tris = t.tris + triOf(this.treeGeoA, f.trees.length) + triOf(this.lampGeo, f.lamps.length)
       + triOf(this.shrubGeo, f.shrubs.length) + triOf(this.tuftGeo, f.tufts.length) + triOf(this.hedgeGeo, f.hedges.length) + triOf(this.signGeo, f.signs.length) + triOf(this.vendGeo, f.vends.length);
-    this.stats = { ...this.stats, trees: f.trees.length, lamps: f.lamps.length, triangles: tris };
-    this.log(
-      `道路を表示: 街路樹 ${f.trees.length} / 街灯 ${f.lamps.length} / 生け垣 ${f.hedges.length} / 低木 ${f.shrubs.length} / 草むら ${f.tufts.length} / 標識 ${f.signs.length} / 自販機 ${f.vends.length} / 三角形 ${(tris / 1e6).toFixed(2)} 百万 / ${(performance.now() - t0).toFixed(0)} ms`,
-    );
+    t.trees = f.trees.length;
+    t.lamps = f.lamps.length;
+    t.fgroup = fg;
+    t.lods = lods;
+    this.group.add(fg);
+    this.flatDirty = true;
+    this.refreshStats();
   }
 }
-

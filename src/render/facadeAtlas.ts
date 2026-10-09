@@ -22,8 +22,11 @@ export const GUTTER = 8;
 export const UPPER_BLOCK = UPPER_H + GUTTER * 2; // 528
 export const GROUND_BLOCK = GROUND_H + GUTTER * 2; // 144
 export const KIND_BLOCK = UPPER_BLOCK + GROUND_BLOCK; // 672
-export const KINDS = 6;
-export const ATLAS_H = KIND_BLOCK * KINDS; // 4032
+/** 0〜5: 外観の種類 / 6〜8: 窓のない壁（6 = 一般、7 = レンガ、8 = 石）/ 9: 窓の多い会社のビル */
+export const KINDS = 10;
+/** 各番号の「描き方」（cellKinds の番号）。窓のない壁は元の外観の目地・床の線だけを描く */
+const KIND_STYLE = [0, 1, 2, 3, 4, 5, 0, 4, 5, 0];
+export const ATLAS_H = KIND_BLOCK * KINDS; // 6720
 
 type C2 = CanvasRenderingContext2D;
 
@@ -141,12 +144,16 @@ type Cell = (p: Pen, r: () => number, i: number, j: number, win: boolean) => voi
  * （カーテンウォール = 2 は、もともと全面ガラスの建物なので全部描く）
  */
 const WIN_MASK: string[][] = [
-  ["XX..X.X.", "X..XX.X.", "XX..X.X.", "X.X.X..X"], // 0 事務所
-  ["XXXX.XX.", "XXXX.XX.", "XXXX.XX.", "XXXX.XX."], // 1 連続窓（途中に壁の区切り）
+  [".XX.....", ".XX.....", ".XX.....", ".XX....."], // 0 事務所（窓は一か所に固めて、あとは壁）
+  ["XX......", "XX......", "XX......", "XX......"], // 1 連続窓（一か所だけ）
   ["XXXXXXXX", "XXXXXXXX", "XXXXXXXX", "XXXXXXXX"], // 2 カーテンウォール
-  ["X.X.X...", "X..XX...", "X.X.X...", "X..XX..."], // 3 集合住宅
-  ["X..X.X..", "X.X..X..", "X..X.X..", ".X.X.X.."], // 4 レンガ
-  ["X...X...", ".X...X..", "X...X...", ".X...X.."], // 5 石造り
+  ["X.X.....", "X.X.....", "X.X.....", "X.X....."], // 3 集合住宅
+  ["..X.....", "..X.....", "..X.....", "..X....."], // 4 レンガ
+  ["X...X...", "X...X...", "X...X...", "X...X..."], // 5 石造り
+  ["........", "........", "........", "........"], // 6 窓なし
+  ["........", "........", "........", "........"], // 7 窓なし（レンガ）
+  ["........", "........", "........", "........"], // 8 窓なし（石）
+  ["XX..X.X.", "X..XX.X.", "XX..X.X.", "X.X.X..X"], // 9 窓の多い会社のビル
 ];
 const hasWin = (kind: number, i: number, j: number) => WIN_MASK[kind][j][i] === "X";
 
@@ -271,7 +278,7 @@ function paintUpper(c: C2, m: C2, kind: number, top: number) {
         p.rect(0, 0, BAY_PX, FLOOR_PX, WALL, 0);
         p.tint(0, 0, BAY_PX, FLOOR_PX, "#000000", 0.0);
         const r = rng(kind * 1009 + j * 31 + i * 7 + 5);
-        cellKinds[kind](p, r, i, j, hasWin(kind, i, j));
+        cellKinds[KIND_STYLE[kind]](p, r, i, j, hasWin(kind, i, j));
         c.restore(); m.restore();
       }
     }
@@ -330,7 +337,7 @@ function buildAtlas(): THREE.DataTexture {
   m.fillStyle = "#000"; m.fillRect(0, 0, ATLAS_W, ATLAS_H);
   for (let k = 0; k < KINDS; k++) {
     paintUpper(c, m, k, upperTop(k));
-    paintGround(c, m, k, groundTop(k));
+    if (k < 6) paintGround(c, m, k, groundTop(k)); // 窓なし・会社のビルの種類は、1 階の帯を使わない（1 階は元の種類のものを引く）
   }
   const col = c.getImageData(0, 0, ATLAS_W, ATLAS_H).data;
   const msk = m.getImageData(0, 0, ATLAS_W, ATLAS_H).data;

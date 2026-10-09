@@ -31,6 +31,9 @@ export class Buildings {
   readonly group = new THREE.Group();
   private readonly renderers: { tiles: TilesRenderer; region: SphereRegion }[] = [];
   private loadedTiles = 0;
+  /** 建物タイルの受け取り処理にかかった時間（ms）の、前回取り出してからの合計 */
+  private loadMs = 0;
+  takeLoadMs(): number { const v = this.loadMs; this.loadMs = 0; return v; }
   private skirtOk = 0;
   private skirtNo = 0;
   radius = 2000;
@@ -80,6 +83,7 @@ export class Buildings {
     tiles.setCamera(this.camera);
     this.setResolution(tiles);
     tiles.addEventListener("load-model", ({ scene }) => {
+      const tLoad0 = performance.now();
       this.loadedTiles++;
       let tri = 0;
       scene.traverse((o) => {
@@ -123,6 +127,10 @@ export class Buildings {
       });
       this.triOf.set(scene, tri);
       this.triangles += tri;
+      // 1 回の処理が長いと、その 1 コマだけ引っかかる。長かったものは記録する（確認用）
+      const dtLoad = performance.now() - tLoad0;
+      this.loadMs += dtLoad;
+      if (dtLoad > 20) this.onMessage(`建物タイル 1 枚の処理が長かった: ${dtLoad.toFixed(0)} ms（三角形 ${(tri / 1000).toFixed(0)} 千）`);
     });
     tiles.addEventListener("dispose-model", ({ scene }) => {
       this.loadedTiles = Math.max(0, this.loadedTiles - 1);

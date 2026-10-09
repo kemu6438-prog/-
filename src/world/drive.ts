@@ -176,9 +176,19 @@ export class Driver {
   yaw = 0;
   private yawInit = false;
 
+  private readonly known = new Set<string>();
+
   constructor(lines: RoadLine[], nodes: RoadNode[] = analyzeNodes(lines), private readonly rand: () => number = Math.random) {
     for (const n of nodes) this.nodeById.set(n.id, n);
+    this.addLines(lines);
+  }
+
+  /** 道を足す（走っている間に、先のタイルが読み込まれたとき）。同じ形の道は 2 重に入れない */
+  addLines(lines: RoadLine[]) {
     for (const l of lines) {
+      const sig = `${l.rank}|${l.pts[0].toFixed(1)},${l.pts[1].toFixed(1)}|${l.pts[l.pts.length - 2].toFixed(1)},${l.pts[l.pts.length - 1].toFixed(1)}|${l.pts.length}`;
+      if (this.known.has(sig)) continue;
+      this.known.add(sig);
       const pts: V2[] = [];
       for (let i = 0; i + 1 < l.pts.length; i += 2) {
         const x = l.pts[i], z = l.pts[i + 1];

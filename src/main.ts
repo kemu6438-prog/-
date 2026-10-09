@@ -2,7 +2,7 @@
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
 /** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
-const BUILD_ID = "14";
+const BUILD_ID = "15";
 import * as THREE from "three/webgpu";
 import { setupLook } from "./render/look";
 import { LocalFrame } from "./core/geo";
@@ -123,7 +123,7 @@ async function main() {
     // 場所を変えたら、運転のための道データも古くなるので作り直す
     driver = null;
     if (mode === "drive") setMode("auto");
-    if (roadsOn) void roads.load(frame, p.lat, p.lon, groundH).catch((e) => log(`道路の作成に失敗: ${e?.stack ?? e}`));
+    roads.begin(frame, groundH); // 道・木は、カメラの近くのタイルを毎コマ少しずつ作る（update）
     camera.position.set(0, 160, 420);
     yaw = 0; pitch = -0.25; orbitT = 0;
     log(`場所: ${p.label} / 建物: LOD${buildings.lod}`);
@@ -420,12 +420,14 @@ async function main() {
 
   // --- 毎コマの処理 ---
   let frames = 0, acc = 0, worst = 0, last = performance.now(), lastStats = 0;
+  let hitchLogged = 0, lastRedraws = 0, hitchRen = 0, hitchUpd = 0, hitchRoad = 0, hitchTile = 0, hitchShadow = false;
   let jsUpd = 0, jsRen = 0, lowSec = 0, okSec = 0, worstUpd = 0, worstRen = 0;
   const tmp = new THREE.Vector3();
   const UP = new THREE.Vector3(0, 1, 0);
   renderer.setAnimationLoop(() => {
     const now = performance.now();
     const dt = Math.min(0.1, (now - last) / 1000);
+    const gap = now - last; // 前のコマから何 ms 空いたか
     benchSamples?.push(now - last);
     frames++; acc += now - last; worst = Math.max(worst, now - last); last = now;
     if (acc >= 1000) {
@@ -504,11 +506,18 @@ async function main() {
     farGround.position.x = camera.position.x;
     farGround.position.z = camera.position.z;
 
+    const tr0 = performance.now();
+    if (roadsOn) {
+      roads.update(camera.position, now);
+      const nl = roads.takeNewLines();
+      if (driver && nl.length) driver.addLines(nl); // 走っている先の道を足す
+    }
     roads.updateLod(camera.position);
     if (footprintCull) {
       roads.cullByFootprints(buildings.footprints, camera.position);
       if (roads.culled + roads.moved !== lastCulled && now - lastCullLog > 5000) { lastCulled = roads.culled + roads.moved; lastCullLog = now; log(`建物と重なる木・小物: 消した ${roads.culled} 個 / ずらして置き直した ${roads.moved} 個`); }
     }
+    const tr1 = performance.now();
     const t1 = performance.now();
     buildings.update();
     const t2 = performance.now();
@@ -519,6 +528,14 @@ async function main() {
     jsRen += t3 - t2;
     worstUpd = Math.max(worstUpd, t2 - t1);
     worstRen = Math.max(worstRen, t3 - t2);
+    // 大きな引っかかり（前のコマから 70 ms 以上）の内訳を記録する。原因（道・建物タイル・影・描画）の見当をつけるため
+    const redraws = look.shadowRedraws();
+    const tileMs = buildings.takeLoadMs();
+    if (gap > 70 && hitchLogged < 40 && now > 8000 && !document.hidden) {
+      hitchLogged++;
+      log(`引っかかり ${gap.toFixed(0)} ms（前のコマの内訳: 描画命令 ${hitchRen.toFixed(0)} / 更新 ${hitchUpd.toFixed(0)} / 道 ${hitchRoad.toFixed(0)} / 建物タイル処理 ${hitchTile.toFixed(0)} / 影の描き直し ${hitchShadow ? "あり" : "なし"}）`);
+    }
+    hitchRen = t3 - t2; hitchUpd = t2 - t1; hitchRoad = tr1 - tr0; hitchTile = tileMs; hitchShadow = redraws !== lastRedraws; lastRedraws = redraws;
 
     if (now - lastStats > 500) {
       lastStats = now;

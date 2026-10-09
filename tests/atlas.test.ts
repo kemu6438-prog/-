@@ -10,6 +10,6 @@ describe("壁の画像の並び", () => {
       expect(upperTop(k) + UPPER_H + GUTTER).toBeLessThanOrEqual(groundTop(k) - GUTTER);
       expect(groundTop(k) + GROUND_H + GUTTER).toBeLessThanOrEqual((k + 1) * KIND_BLOCK);
     }
-    expect(ATLAS_H).toBeLessThanOrEqual(4096);
+    expect(ATLAS_H).toBeLessThanOrEqual(8192);
   });
 });

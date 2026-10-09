@@ -116,12 +116,27 @@ export async function fetchRoadTile(
   y: number,
   url: (z: number, x: number, y: number) => string = tileUrl,
 ): Promise<RoadLayerLike | null> {
-  const res = await fetch(url(ZOOM, x, y));
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const tile = new VectorTile(new Pbf(new Uint8Array(await res.arrayBuffer())));
-  return (tile.layers.road as unknown as RoadLayerLike) ?? null;
+  // 走って戻ってきたときに、同じタイルを何度も取り直さない（取れたものだけ、新しい順に 80 枚まで覚える）
+  const key = url(ZOOM, x, y);
+  if (layerCache.has(key)) {
+    const v = layerCache.get(key)!;
+    layerCache.delete(key);
+    layerCache.set(key, v);
+    return v;
+  }
+  const res = await fetch(key);
+  let layer: RoadLayerLike | null;
+  if (res.status === 404) layer = null;
+  else {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const tile = new VectorTile(new Pbf(new Uint8Array(await res.arrayBuffer())));
+    layer = (tile.layers.road as unknown as RoadLayerLike) ?? null;
+  }
+  layerCache.set(key, layer);
+  if (layerCache.size > 80) layerCache.delete(layerCache.keys().next().value!);
+  return layer;
 }
+const layerCache = new Map<string, RoadLayerLike | null>();
 
 // ---------------------------------------------------------------------------
 // 交差点（3 本以上の道が 1 点に集まる所）を見つける

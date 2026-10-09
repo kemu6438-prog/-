@@ -20,6 +20,8 @@ export type Look = {
   setOptions(o: Partial<{ shadow: boolean }>): void;
   /** true の間は影の絵を描き直さない（測定用） */
   freezeShadow(b: boolean): void;
+  /** 影の絵を描き直した回数（確認用） */
+  shadowRedraws(): number;
   groundMaterial: THREE.MeshStandardNodeMaterial;
   /** 太陽の向き（単位ベクトル。街の外の場面の光をそろえる用） */
   sunDir: THREE.Vector3;
@@ -150,6 +152,7 @@ export function setupLook(
   const shadowCenter = new THREE.Vector3(1e9, 0, 1e9);
   let shadowStamp = 0;
   let shadowDirty = true;
+  let shadowRedraws = 0;
   let shadowFrozen = false;
   const shadowEvery = qs.get("shadowsync") === "1"; // ?shadowsync=1 で従来どおり毎コマ描く（比較用）
   sun.shadow.autoUpdate = shadowEvery;
@@ -159,7 +162,7 @@ export function setupLook(
     clouds.position.copy(camera.position);
     // 影の範囲: カメラの真下を中心にする（向きを変えても動かない）。
     // 以前は「向いている先」を中心にしていたので、視点を回すたびに影の絵を丸ごと描き直して、ガクッと引っかかっていた
-    const R = isMobile ? 240 : 320;
+    const R = isMobile ? 200 : 240;
     center.set(camera.position.x, 0, camera.position.z);
     const texel = (2 * R) / sun.shadow.mapSize.x;
     center.x = Math.round(center.x / texel) * texel;
@@ -172,7 +175,8 @@ export function setupLook(
     // 影の絵は毎コマ描き直さない（中・高画質が重い主な理由）。カメラが 70m 動いたとき、または 4 秒ごと、
     // 切り替え直後にだけ描き直す。描き直すときに太陽の位置も一緒に動かすので、影がずれて見えることはない。
     const now = performance.now();
-    if (!shadowFrozen && (shadowEvery || shadowDirty || center.distanceTo(shadowCenter) > (isMobile ? 40 : 70) || now - shadowStamp > 4000)) {
+    if (!shadowFrozen && (shadowEvery || shadowDirty || center.distanceTo(shadowCenter) > (isMobile ? 35 : 50) || now - shadowStamp > 6000)) {
+      shadowRedraws++;
       shadowCenter.copy(center);
       shadowStamp = now;
       shadowDirty = false;
@@ -204,6 +208,7 @@ export function setupLook(
     render,
     setOptions,
     freezeShadow: (b: boolean) => { shadowFrozen = b; },
+    shadowRedraws: () => shadowRedraws,
     groundMaterial,
     sunDir,
   } as Look;
