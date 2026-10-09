@@ -6,6 +6,8 @@ import * as THREE from "three/webgpu";
 import type { LocalFrame } from "../core/geo";
 import { depthPrepassMaterial, ensureFloatAttribute, facadeMaterial, findIdAttribute, plainMaterial } from "./facade";
 import { addSkirt } from "./skirt";
+import { Footprints } from "./footprints";
+import { WALL_ATTR, addWallTangents, ensureWallAttribute } from "./walls";
 
 let draco: DRACOLoader | null = null;
 function sharedDraco() {
@@ -33,6 +35,11 @@ export class Buildings {
   private skirtNo = 0;
   radius = 2000;
   /** 奥行きだけの先描きを使うか（?prepass=0 で無効） */
+  /** 建物の足あと（街路樹などを建物から避けるのに使う） */
+  readonly footprints = new Footprints();
+  wallDup = 0; wallTris = 0; roofTris = 0;
+  /** 建物の壁が影を受けるか（重いので既定は受けない。?wallshadow=1 で受ける）。地面・道路・木には、建物の影は落ちる */
+  wallShadow = new URLSearchParams(location.search).get("wallshadow") === "1";
   private readonly tmpEcef = new THREE.Vector3();
   prepass = new URLSearchParams(location.search).get("prepass") !== "0";
   /** ?facade=0 で壁の凝った塗りをやめて単色にする（重さの原因が壁の塗りかどうかを調べる比較用） */
@@ -81,23 +88,26 @@ export class Buildings {
         const g = mesh.geometry;
         tri += (g.index ? g.index.count : (g.getAttribute("position")?.count ?? 0)) / 3;
         mesh.castShadow = true;
-        mesh.receiveShadow = true;
+        mesh.receiveShadow = this.wallShadow;
         if (this.lod !== 1) return; // LOD2 は元の材質（壁の写真つき）のまま
         if (!g.getAttribute("normal")) g.computeVertexNormals();
         const idName = findIdAttribute(g);
         if (idName) ensureFloatAttribute(g, idName);
-        // この建物の座標 → 表示の座標（y が上）。タイルの読み込み直後は、持ち主（scene）より上の行列がまだ掛かっていないので手で掛ける
-        let ok = false;
-        if (idName) {
-          const m = mesh.matrix.clone();
-          mesh.updateMatrix();
-          m.copy(mesh.matrix);
-          for (let p = mesh.parent; p && p !== scene; p = p.parent) { p.updateMatrix(); m.premultiply(p.matrix); }
-          m.premultiply(scene.matrix).premultiply(this.frame.ecefToLocal);
-          ok = addSkirt(g, idName, m.elements);
+        // この建物の座標 → 表示の座標（y が上）の行列。タイルの読み込み直後は、持ち主（scene）より上の行列がまだ掛かっていないので手で掛ける
+        const m = mesh.matrix.clone();
+        mesh.updateMatrix();
+        m.copy(mesh.matrix);
+        for (let p = mesh.parent; p && p !== scene; p = p.parent) { p.updateMatrix(); m.premultiply(p.matrix); }
+        m.premultiply(scene.matrix).premultiply(this.frame.ecefToLocal);
+        const ok = idName ? addSkirt(g, idName, m.elements) : false;
+        // 壁の向きを頂点に書き込む（窓の縁のざらつき対策）＋ 屋根の輪郭を覚える（街路樹を建物から避けるため）
+        if (!g.getAttribute(WALL_ATTR)) {
+          const st = addWallTangents(g, m.elements, this.footprints);
+          if (!st) ensureWallAttribute(g);
+          else { this.wallDup += st.duplicated; this.wallTris += st.walls; this.roofTris += st.roofs; }
         }
         if (ok) this.skirtOk++; else this.skirtNo++;
-        if ((this.skirtOk + this.skirtNo) % 40 === 1) this.onMessage(`建物の足もと補強（浮き対策）: 済み ${this.skirtOk} / 対象外 ${this.skirtNo}`);
+        if ((this.skirtOk + this.skirtNo) % 40 === 1) this.onMessage(`建物の足もと補強（浮き対策）: 済み ${this.skirtOk} / 対象外 ${this.skirtNo} / 壁 ${this.wallTris} 面・屋根 ${this.roofTris} 面・頂点の複製 ${this.wallDup}`);
         mesh.material = this.facadeOn ? facadeMaterial(idName) : plainMaterial();
         // 奥行きだけを先に描く（?prepass=0 で無効にして比べられる）
         if (this.prepass && !mesh.userData.hasPrepass) {
@@ -139,6 +149,7 @@ export class Buildings {
       r.tiles.dispose();
     }
     this.renderers.length = 0;
+    this.footprints.clear();
     this.loadedTiles = 0;
     this.triangles = 0;
   }
@@ -160,6 +171,7 @@ export class Buildings {
 
   update() {
     this.camera.updateMatrixWorld();
+    this.footprints.step(2); // 屋根の輪郭の書き込み（1 コマ 2 ミリ秒まで）
     // 読み込む範囲は、地球中心座標（建物データの座標）で指定する
     const centerEcef = this.tmpEcef.copy(this.camera.position).applyMatrix4(this.frame.localToEcef);
     for (const r of this.renderers) {

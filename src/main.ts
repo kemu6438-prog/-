@@ -1,6 +1,8 @@
 // 建物データ確認ページ（M0）。
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
+/** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
+const BUILD_ID = "12";
 import * as THREE from "three/webgpu";
 import { setupLook } from "./render/look";
 import { LocalFrame } from "./core/geo";
@@ -101,6 +103,11 @@ async function main() {
   roads.treeRadius = isMobile ? 450 : 700;
   scene.add(roads.group);
   const roadsOn = new URLSearchParams(location.search).get("roads") !== "0";
+  // 建物と重なる木・小物を消す（?fp=0 で無効）
+  const footprintCull = new URLSearchParams(location.search).get("fp") !== "0";
+  let lastCulled = 0, lastCullLog = 0;
+  log(`版: ${BUILD_ID}`);
+  document.title = `${document.title} (${BUILD_ID})`;
 
   async function loadPlace(p: Place) {
     place = p;
@@ -496,6 +503,10 @@ async function main() {
     farGround.position.z = camera.position.z;
 
     roads.updateLod(camera.position);
+    if (footprintCull) {
+      roads.cullByFootprints(buildings.footprints, camera.position);
+      if (roads.culled !== lastCulled && now - lastCullLog > 5000) { lastCulled = roads.culled; lastCullLog = now; log(`建物と重なる木・小物を消した: ${roads.culled} 個`); }
+    }
     const t1 = performance.now();
     buildings.update();
     const t2 = performance.now();

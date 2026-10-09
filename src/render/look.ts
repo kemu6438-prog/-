@@ -96,7 +96,8 @@ export function setupLook(
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = num("exp", 0.6);
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // 影の縁のぼかしは、軽い方式（PCF）にする。PCFSoft は 1 画素あたりの参照回数が多く、影を受ける全部の面で重くなる
+  renderer.shadowMap.type = qs.get("softshadow") === "1" ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
 
   // --- 地面（芝とコンクリートのまだら。道路を作るまでの仮） ---
   const groundMaterial = new THREE.MeshStandardNodeMaterial({ roughness: 0.93, metalness: 0 });

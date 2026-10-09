@@ -13,6 +13,7 @@ import {
 } from "./roadData";
 import { buildRibbon, roadExtra, sidewalkExtra, type Ribbon } from "./roadGeometry";
 import { placeFurniture, type Furniture } from "./roadFurniture";
+import type { Footprints } from "./footprints";
 
 // ---------------------------------------------------------------------------
 // 見た目（シェーダー）
@@ -320,6 +321,9 @@ function lampGeometry(): THREE.BufferGeometry {
 // ---------------------------------------------------------------------------
 // 置く側
 // ---------------------------------------------------------------------------
+type CullInfo = { items: Array<{ x: number; z: number }>; alive: Uint8Array; version: number; margin: number };
+const HIDE = new THREE.Matrix4().makeScale(0, 0, 0).setPosition(0, -500, 0);
+
 /** 場所ごとの箱（250 m 四方）に分けて並べる。見えない箱は描かれない */
 function chunkedInstances<T extends { x: number; z: number }>(
   parent: THREE.Group,
@@ -327,7 +331,7 @@ function chunkedInstances<T extends { x: number; z: number }>(
   mat: THREE.Material,
   items: T[],
   place: (it: T, m: THREE.Matrix4) => void,
-  opts: { cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number; receive?: boolean } = {},
+  opts: { cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number; receive?: boolean; margin?: number } = {},
 ) {
   const cell = opts.cell ?? 250;
   const bins = new Map<string, T[]>();
@@ -354,6 +358,8 @@ function chunkedInstances<T extends { x: number; z: number }>(
     }
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
+    // 建物の足あとと重なった物を後から消すための情報
+    mesh.userData.cull = { items: list, alive: new Uint8Array(list.length).fill(1), version: -1, margin: opts.margin ?? 0.5 } satisfies CullInfo;
     mesh.castShadow = !!opts.cast;
     mesh.receiveShadow = opts.receive ?? true; // 草むらなど小さい物は影を受けなくてよい（影の見え方が変わらず、1 画素あたりの計算が減る）
     parent.add(mesh);
@@ -427,8 +433,41 @@ export class Roads {
     }
   }
 
+  private cullCursor = 0;
+  /** 建物の足あとの中に入ってしまった物（木など）を消す。近くの塊だけを、1 コマあたり少しずつ点検する */
+  cullByFootprints(fp: Footprints, cam: THREE.Vector3, budgetMs = 1.5) {
+    const t0 = performance.now();
+    const all: THREE.InstancedMesh[] = [];
+    for (const l of this.lods) for (const m of l.meshes) all.push(m);
+    const N = all.length;
+    for (let step = 0; step < N; step++) {
+      const mesh = all[(this.cullCursor + step) % N];
+      const c = mesh.userData.cull as CullInfo | undefined;
+      if (!c || c.version === fp.version) continue;
+      const b = mesh.boundingSphere;
+      if (b && Math.hypot(b.center.x - cam.x, b.center.z - cam.z) - b.radius > 700) continue; // 遠い塊は、近づいてから
+      let changed = false;
+      for (let i = 0; i < c.items.length; i++) {
+        if (!c.alive[i]) continue;
+        const it = c.items[i];
+        if (fp.near(it.x, it.z, c.margin)) {
+          c.alive[i] = 0;
+          mesh.setMatrixAt(i, HIDE);
+          changed = true;
+          this.culled++;
+        }
+      }
+      if (changed) mesh.instanceMatrix.needsUpdate = true;
+      c.version = fp.version;
+      if (performance.now() - t0 > budgetMs) { this.cullCursor = (this.cullCursor + step + 1) % N; return; }
+    }
+  }
+  /** 建物と重なって消した物の数（確認用） */
+  culled = 0;
+
   clear() {
     this.token++;
+    this.culled = 0;
     this.lods = [];
     for (const c of [...this.group.children]) {
       this.group.remove(c);
@@ -541,13 +580,14 @@ export class Roads {
       m.compose(new THREE.Vector3(t.x, 0, t.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), t.rot), new THREE.Vector3(t.scale, t.scale * (0.9 + t.tint * 0.25), t.scale));
     }, {
       cast: true,
+      margin: 1.6, // 木の枝ぶんの余白
       extra: (g, list) => {
         g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1));
       },
     }) });
     this.lods.push({ draw: 350, shadow: 0, meshes: chunkedInstances(this.group, this.lampGeo, this.metalMat, f.lamps, (l, m) => {
       m.compose(new THREE.Vector3(l.x, 0, l.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), l.rot), new THREE.Vector3(1, 1, 1));
-    }) });
+    }, { margin: 0.2 }) });
     // 生け垣・標識・自動販売機（近くだけ描く）
     const Y = new THREE.Vector3(0, 1, 0);
     this.lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(this.group, this.hedgeGeo, this.treeMat, f.hedges, (h, m) => {
@@ -557,6 +597,7 @@ export class Roads {
         g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1));
       },
       cell: 200,
+      margin: 0.6,
     }) });
     this.lods.push({ draw: 240, shadow: 0, meshes: chunkedInstances(this.group, this.shrubGeo, this.treeMat, f.shrubs, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale * (0.8 + h.tint * 0.4), h.scale));
@@ -564,6 +605,7 @@ export class Roads {
       extra: (g, list) => { g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1)); },
       cell: 200,
       receive: false,
+      margin: 0.9,
     }) });
     this.lods.push({ draw: 160, shadow: 0, meshes: chunkedInstances(this.group, this.tuftGeo, this.tuftMat, f.tufts, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale, h.scale));
@@ -571,13 +613,14 @@ export class Roads {
       extra: (g, list) => { g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1)); },
       cell: 160,
       receive: false,
+      margin: 0.3,
     }) });
     this.lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(this.group, this.signGeo, this.metalMat, f.signs, (p, m) => {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
-    }, { cell: 200 }) });
+    }, { cell: 200, margin: 0.2 }) });
     this.lods.push({ draw: 200, shadow: 0, meshes: chunkedInstances(this.group, this.vendGeo, this.metalMat, f.vends, (p, m) => {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
-    }, { cell: 200 }) });
+    }, { cell: 200, margin: 0 }) });
     const triOf = (g: THREE.BufferGeometry, k: number) => (g.index ? g.index.count : g.getAttribute("position").count) / 3 * k;
     tris += triOf(this.treeGeo, f.trees.length) + triOf(this.lampGeo, f.lamps.length)
       + triOf(this.shrubGeo, f.shrubs.length) + triOf(this.tuftGeo, f.tufts.length) + triOf(this.hedgeGeo, f.hedges.length) + triOf(this.signGeo, f.signs.length) + triOf(this.vendGeo, f.vends.length);

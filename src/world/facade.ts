@@ -4,7 +4,7 @@
 import * as THREE from "three/webgpu";
 import {
   abs, attribute, cameraPosition, cameraProjectionMatrix, cameraViewMatrix, clamp, cross, dFdx, dFdy, dot, float, floor,
-  fract, length, max, min, mix, normalize, normalWorldGeometry, positionView, positionWorld, sign, smoothstep, step, vec2, vec3, viewportSize,
+  fract, length, max, min, mix, normalize, positionView, positionWorld, sign, smoothstep, step, vec2, vec3, viewportSize,
 } from "three/tsl";
 import { hash21, vnoise, type N } from "../render/noise";
 import { TEX } from "../render/assets";
@@ -52,13 +52,12 @@ function buildLook(idRaw: N): Out {
   const pv: N = positionView as N;
   const faceV: N = normalize(cross(dFdx(pv) as N, dFdy(pv) as N));
   const faceD: N = faceV.transformNormalByInverseViewMatrix(cameraViewMatrix);
-  // 壁の向き（横方向の座標 u の計算に使う）。画面の変化量から求めた向き（faceD）は、GPU の計算誤差で画素ごとに少し揺れる。
-  // 誤差は「建物の座標の大きさ」倍に拡大されて、窓の縁がざらざらにじむ原因になる。
-  // 建物データ自体の法線（面ごとに一定で揺れない）が faceD とほぼ同じ向きなら、そちらを使う。違うとき（なめらかな法線のデータ）は faceD のまま。
-  const faceG: N = normalize(normalWorldGeometry as N);
-  const faceN: N = normalize(mix(faceD, faceG, step(0.99, dot(faceG, faceD))) as N);
+  // 壁が水平か（屋根か）の判定には、画面の変化量から求めた向きを使う（0.5 の境目だけが問題なので、多少揺れても影響しない）
+  const faceN: N = faceD;
   const wallMask: N = step(abs(faceN.y), 0.5);
-  const tangent: N = normalize(vec2(faceN.z.negate(), faceN.x));
+  // 壁の横方向の向きは、読み込み時に頂点へ書き込んだ値を使う（同じ壁ならどの頂点も同じ値。
+  // 以前は画面の変化量から画素ごとに求めていて、GPU の計算誤差が「建物の座標の大きさ」倍に拡大され、窓の縁がざらざらにじんでいた）
+  const tangent: N = attribute("wallT", "vec2") as unknown as N;
   // 1 ピクセルが現実で何メートルか（遠い・斜めほど大きい）
   const dist: N = length(pv);
   const pixAngle: N = float(2.0).div((cameraProjectionMatrix as N).element(1).y.mul(viewportSize.y));
