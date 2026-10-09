@@ -10,10 +10,10 @@ import { analyzeNodes, halfRoad, type RoadLine, type RoadNode } from "./roadData
 export const SPEED_LIMIT_KMH = 60;
 /** 道の幅の区分ごとの、実際に出す速さ（km/h） */
 export const CRUISE_KMH = [40, 40, 45, 50, 50];
-const ACCEL = 2.0; // m/s²
+const ACCEL = 3.4; // m/s²（ふつうの車の発進くらい）
 const DECEL = 1.3; // ふつうのブレーキ（先読みの計算に使う）
 const DECEL_MAX = 3.8; // これより強くは止まれない
-const JERK = 2.6; // 加速度の変わり方（m/s³）。小さいほど、ゆったり
+const JERK = 5.5; // 加速度の変わり方（m/s³）。小さいほど、ゆったり
 const LAT_ACC = 2.6; // カーブで横にかかってよい加速度（m/s²）
 const STEP = 1.0; // 道を点に直すときの間隔（m）
 export const EYE_Y = 1.25; // 乗っている人の目の高さ（m）

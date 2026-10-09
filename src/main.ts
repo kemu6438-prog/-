@@ -71,17 +71,17 @@ async function main() {
   let place = PLACES[0];
   let frame = new LocalFrame({ lat: place.lat, lon: place.lon, h: place.groundH });
   let groundH = place.groundH;
-  // 地面は細かく区切った板にする（巨大な 1 枚の板だと奥行きの計算がずれて、道路が地面の下に隠れてしまう）
+  // 地面は 8m 角ほどに区切った板にする（巨大な 1 枚の板だと奥行きの計算がずれて、道路が地面の下に隠れてしまう。以前の 2.5m 角は三角形が多すぎたので粗くした）
   // 地面は道路より 12cm 沈めておく（同じ高さだと奥行きの比べ方が画面の大きさで変わり、近くの道路が地面に隠れることがあった）
   const GROUND_Y = -0.12;
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400, 160, 160), look.groundMaterial);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400, 50, 50), look.groundMaterial);
   ground.receiveShadow = true;
   ground.position.y = GROUND_Y;
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
   // 遠くは粗い輪っか状の板で埋める（真ん中は空けておく。近くに巨大な板があると、奥行きの計算がずれて道路が隠れる）（霞で見えにくい所。少し低くして重ならないようにする）
   // 中くらいの距離（半径 190m〜2100m）の地面。さらに少し低くして、近くの地面と重なっても負けるようにする
-  const midGround = new THREE.Mesh(new THREE.RingGeometry(190, 2100, 128, 24), look.groundMaterial);
+  const midGround = new THREE.Mesh(new THREE.RingGeometry(190, 2100, 128, 8), look.groundMaterial);
   midGround.rotation.x = -Math.PI / 2;
   midGround.position.y = GROUND_Y - 0.2;
   scene.add(midGround);
@@ -111,6 +111,9 @@ async function main() {
     buildings.clear();
     buildings.setFrame(frame);
     roads.clear();
+    // 場所を変えたら、運転のための道データも古くなるので作り直す
+    driver = null;
+    if (mode === "drive") setMode("auto");
     if (roadsOn) void roads.load(frame, p.lat, p.lon, groundH).catch((e) => log(`道路の作成に失敗: ${e?.stack ?? e}`));
     camera.position.set(0, 160, 420);
     yaw = 0; pitch = -0.25; orbitT = 0;
@@ -293,6 +296,9 @@ async function main() {
   // --- カメラ ---
   let mode: "auto" | "free" | "drive" = "auto";
   let driver: Driver | null = null;
+  // 画面の文字は、変わったときだけ書き換える（毎コマ書くと無駄に再計算される）
+  const hudLast: Record<string, string> = {};
+  const setHud = (id: string, v: string) => { if (hudLast[id] !== v) { hudLast[id] = v; $(id).textContent = v; } };
   const interior = createInterior(); // 車の中（拡大して置き、奥→手前の順で重ねる）
   scene.add(interior.car);
   let seat: SeatId = "driver";
@@ -407,6 +413,7 @@ async function main() {
   let frames = 0, acc = 0, worst = 0, last = performance.now(), lastStats = 0;
   let jsUpd = 0, jsRen = 0, lowSec = 0, okSec = 0, worstUpd = 0, worstRen = 0;
   const tmp = new THREE.Vector3();
+  const UP = new THREE.Vector3(0, 1, 0);
   renderer.setAnimationLoop(() => {
     const now = performance.now();
     const dt = Math.min(0.1, (now - last) / 1000);
@@ -453,14 +460,14 @@ async function main() {
       interior.place(driver.pose.x, driver.pose.z, driver.yaw, st, camera.position);
       yaw = driver.yaw;
       pitch = -0.02;
-      $("hudspeed").textContent = String(Math.round(driver.speedKmh));
-      $("hudlimit").textContent = String(Math.round(driver.limitKmh));
-      $("hudwait").textContent = driver.speed < 0.5 ? "" : "走行中";
+      setHud("hudspeed", String(Math.round(driver.speedKmh)));
+      setHud("hudlimit", String(Math.round(driver.limitKmh)));
+      setHud("hudwait", driver.speed < 0.5 ? "" : "走行中");
     } else {
       camera.rotation.set(pitch, yaw, 0, "YXZ");
       const speed = (streetEye ? (keys.has("shift") ? 40 : 10) : keys.has("shift") ? 300 : 80) * dt;
       const move = (x: number, y: number, z: number) => {
-        tmp.set(x, 0, z).applyEuler(new THREE.Euler(0, yaw, 0));
+        tmp.set(x, 0, z).applyAxisAngle(UP, yaw);
         camera.position.addScaledVector(tmp, speed);
         camera.position.y += y * speed;
       };
@@ -477,7 +484,7 @@ async function main() {
     if (benchMoving && mode === "free") {
       // 測定中は、向いている方向へ 30m/秒で 2 秒進み、2 秒戻る
       const dir = Math.floor(now / 2000) % 2 === 0 ? 1 : -1;
-      tmp.set(0, 0, -1).applyEuler(new THREE.Euler(0, yaw, 0));
+      tmp.set(0, 0, -1).applyAxisAngle(UP, yaw);
       camera.position.addScaledVector(tmp, 30 * dt * dir);
     }
     // 地面は常にカメラの真下に敷く（平らな仮の地面）

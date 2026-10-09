@@ -4,7 +4,7 @@ import { GLTFExtensionsPlugin, LoadRegionPlugin, SphereRegion } from "3d-tiles-r
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import * as THREE from "three/webgpu";
 import type { LocalFrame } from "../core/geo";
-import { ensureFloatAttribute, facadeMaterial, findIdAttribute } from "./facade";
+import { depthPrepassMaterial, ensureFloatAttribute, facadeMaterial, findIdAttribute, plainMaterial } from "./facade";
 import { addSkirt } from "./skirt";
 
 let draco: DRACOLoader | null = null;
@@ -32,6 +32,11 @@ export class Buildings {
   private skirtOk = 0;
   private skirtNo = 0;
   radius = 2000;
+  /** 奥行きだけの先描きを使うか（?prepass=0 で無効） */
+  private readonly tmpEcef = new THREE.Vector3();
+  prepass = new URLSearchParams(location.search).get("prepass") !== "0";
+  /** ?facade=0 で壁の凝った塗りをやめて単色にする（重さの原因が壁の塗りかどうかを調べる比較用） */
+  facadeOn = new URLSearchParams(location.search).get("facade") !== "0";
   /** 1: 箱形(LOD1)に窓や色を塗る / 2: 詳細モデル(LOD2)をそのまま表示（重い） */
   lod: 1 | 2 = 1;
   /** 読み込み済みタイルの三角形の数（重さの目安） */
@@ -72,7 +77,7 @@ export class Buildings {
       let tri = 0;
       scene.traverse((o) => {
         const mesh = o as THREE.Mesh;
-        if (!mesh.isMesh) return;
+        if (!mesh.isMesh || mesh.userData.isPrepass) return;
         const g = mesh.geometry;
         tri += (g.index ? g.index.count : (g.getAttribute("position")?.count ?? 0)) / 3;
         mesh.castShadow = true;
@@ -93,7 +98,18 @@ export class Buildings {
         }
         if (ok) this.skirtOk++; else this.skirtNo++;
         if ((this.skirtOk + this.skirtNo) % 40 === 1) this.onMessage(`建物の足もと補強（浮き対策）: 済み ${this.skirtOk} / 対象外 ${this.skirtNo}`);
-        mesh.material = facadeMaterial(idName);
+        mesh.material = this.facadeOn ? facadeMaterial(idName) : plainMaterial();
+        // 奥行きだけを先に描く（?prepass=0 で無効にして比べられる）
+        if (this.prepass && !mesh.userData.hasPrepass) {
+          const pre = new THREE.Mesh(g, depthPrepassMaterial());
+          pre.renderOrder = -100;
+          pre.userData.isPrepass = true;
+          pre.castShadow = false;
+          pre.receiveShadow = false;
+          pre.matrixAutoUpdate = false;
+          mesh.add(pre);
+          mesh.userData.hasPrepass = true;
+        }
       });
       this.triOf.set(scene, tri);
       this.triangles += tri;
@@ -145,7 +161,7 @@ export class Buildings {
   update() {
     this.camera.updateMatrixWorld();
     // 読み込む範囲は、地球中心座標（建物データの座標）で指定する
-    const centerEcef = this.camera.position.clone().applyMatrix4(this.frame.localToEcef);
+    const centerEcef = this.tmpEcef.copy(this.camera.position).applyMatrix4(this.frame.localToEcef);
     for (const r of this.renderers) {
       r.region.sphere.set(centerEcef, this.radius);
       r.tiles.update();

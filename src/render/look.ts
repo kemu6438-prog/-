@@ -139,7 +139,6 @@ export function setupLook(
   };
 
   const tmp = new THREE.Vector3();
-  const fwd = new THREE.Vector3();
   const center = new THREE.Vector3();
   const shadowCenter = new THREE.Vector3(1e9, 0, 1e9);
   let shadowStamp = 0;
@@ -150,12 +149,10 @@ export function setupLook(
 
   const update = () => {
     sky.position.copy(camera.position);
-    // 影の範囲: カメラが向いている先の地面まわり（影の粒が荒くならないよう小さな範囲を追う）
-    const R = isMobile ? 220 : 300;
-    camera.getWorldDirection(fwd);
-    const t = fwd.y < -0.05 ? Math.min(-camera.position.y / fwd.y, R * 1.1) : R * 0.4;
-    center.copy(camera.position).addScaledVector(fwd, t);
-    center.y = 0;
+    // 影の範囲: カメラの真下を中心にする（向きを変えても動かない）。
+    // 以前は「向いている先」を中心にしていたので、視点を回すたびに影の絵を丸ごと描き直して、ガクッと引っかかっていた
+    const R = isMobile ? 240 : 320;
+    center.set(camera.position.x, 0, camera.position.z);
     const texel = (2 * R) / sun.shadow.mapSize.x;
     center.x = Math.round(center.x / texel) * texel;
     center.z = Math.round(center.z / texel) * texel;
@@ -164,10 +161,10 @@ export function setupLook(
       cam.left = -R; cam.right = R; cam.top = R; cam.bottom = -R;
       cam.updateProjectionMatrix();
     }
-    // 影の絵は毎コマ描き直さない（中・高画質が重い主な理由）。注目点が 25m ずれたとき、または 1.5 秒ごと、
+    // 影の絵は毎コマ描き直さない（中・高画質が重い主な理由）。カメラが 70m 動いたとき、または 4 秒ごと、
     // 切り替え直後にだけ描き直す。描き直すときに太陽の位置も一緒に動かすので、影がずれて見えることはない。
     const now = performance.now();
-    if (!shadowFrozen && (shadowEvery || shadowDirty || center.distanceTo(shadowCenter) > 25 || now - shadowStamp > 1500)) {
+    if (!shadowFrozen && (shadowEvery || shadowDirty || center.distanceTo(shadowCenter) > (isMobile ? 40 : 70) || now - shadowStamp > 4000)) {
       shadowCenter.copy(center);
       shadowStamp = now;
       shadowDirty = false;

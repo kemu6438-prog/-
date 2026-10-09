@@ -54,4 +54,28 @@ describe("建物の足もとを伸ばす", () => {
     g.setAttribute("normal", new BufferAttribute(new Float32Array(9), 3));
     expect(addSkirt(g, null, new Array(16).fill(0))).toBe(false);
   });
+
+  it("頂点の順番がばらばら（建物 ID が交互）でも、結果は同じ", () => {
+    const a = box(1, 5, 30, 1), b = box(1, 2, 12, 2, 100);
+    const mk = (order: number[]) => {
+      const P = [...a.pos, ...b.pos], I = [...a.ids, ...b.ids];
+      const pos: number[] = [], ids: number[] = [];
+      for (const i of order) { pos.push(P[i * 3], P[i * 3 + 1], P[i * 3 + 2]); ids.push(I[i]); }
+      const g = new BufferGeometry();
+      g.setAttribute("position", new BufferAttribute(new Float32Array(pos), 3));
+      g.setAttribute("_batchid", new BufferAttribute(new Float32Array(ids), 1));
+      return g;
+    };
+    const n = a.ids.length + b.ids.length;
+    const straight = Array.from({ length: n }, (_, i) => i);
+    const shuffled = straight.slice().sort((i, j) => ((i * 7) % 11) - ((j * 7) % 11) || i - j);
+    const g1 = mk(straight), g2 = mk(shuffled);
+    const I = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    expect(addSkirt(g1, "_batchid", I)).toBe(true);
+    expect(addSkirt(g2, "_batchid", I)).toBe(true);
+    const p1 = g1.getAttribute("position"), p2 = g2.getAttribute("position");
+    shuffled.forEach((orig, k) => {
+      expect(p2.getY(k)).toBeCloseTo(p1.getY(orig), 5);
+    });
+  });
 });

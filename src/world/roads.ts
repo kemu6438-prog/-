@@ -327,7 +327,7 @@ function chunkedInstances<T extends { x: number; z: number }>(
   mat: THREE.Material,
   items: T[],
   place: (it: T, m: THREE.Matrix4) => void,
-  opts: { cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number } = {},
+  opts: { cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number; receive?: boolean } = {},
 ) {
   const cell = opts.cell ?? 250;
   const bins = new Map<string, T[]>();
@@ -355,7 +355,7 @@ function chunkedInstances<T extends { x: number; z: number }>(
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
     mesh.castShadow = !!opts.cast;
-    mesh.receiveShadow = true;
+    mesh.receiveShadow = opts.receive ?? true; // 草むらなど小さい物は影を受けなくてよい（影の見え方が変わらず、1 画素あたりの計算が減る）
     parent.add(mesh);
     made.push(mesh);
   }
@@ -478,7 +478,12 @@ export class Roads {
     if (my !== this.token) return;
     // 遠すぎる線は捨てる（読み込み範囲の外側）
     const R2 = this.radius * this.radius * 1.2;
-    const near = lines.filter((l) => l.pts[0] * l.pts[0] + l.pts[1] * l.pts[1] < R2);
+    // 始点だけでなく、どれか 1 つでも点が範囲内にある線を残す（始点が遠くても近くを通る道が消えないように）
+    const near = lines.filter((l) => {
+      const q = l.pts;
+      for (let i = 0; i + 1 < q.length; i += 2) if (q[i] * q[i] + q[i + 1] * q[i + 1] < R2) return true;
+      return false;
+    });
     const nodes = analyzeNodes(near);
     this.lines = near;
     this.nodes = nodes;
@@ -558,12 +563,14 @@ export class Roads {
     }, {
       extra: (g, list) => { g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1)); },
       cell: 200,
+      receive: false,
     }) });
     this.lods.push({ draw: 160, shadow: 0, meshes: chunkedInstances(this.group, this.tuftGeo, this.tuftMat, f.tufts, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale, h.scale));
     }, {
       extra: (g, list) => { g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1)); },
       cell: 160,
+      receive: false,
     }) });
     this.lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(this.group, this.signGeo, this.metalMat, f.signs, (p, m) => {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));

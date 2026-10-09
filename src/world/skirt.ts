@@ -40,15 +40,25 @@ export function addSkirt(g: BufferGeometry, idName: string | null, toWorld: Arra
   const n = pos.count;
   const low = new Map<number, number>();
   const hs = new Float32Array(n);
+  // 同じ建物の頂点は並んでいることが多いので、直前の建物の値は手元に持って、Map は建物が変わるときだけ触る（結果は同じで、読み込み時の時間が減る）
+  let curId = NaN, curLow = Infinity;
   for (let i = 0; i < n; i++) {
     const h = r0 * pos.getX(i) + r1 * pos.getY(i) + r2 * pos.getZ(i);
     hs[i] = h;
     const id = ids.getX(i);
-    const cur = low.get(id);
-    if (cur === undefined || h < cur) low.set(id, h);
+    if (id !== curId) {
+      if (curId === curId) { const c = low.get(curId); if (c === undefined || curLow < c) low.set(curId, curLow); }
+      curId = id;
+      curLow = Infinity;
+    }
+    if (h < curLow) curLow = h;
   }
+  if (curId === curId) { const c = low.get(curId); if (c === undefined || curLow < c) low.set(curId, curLow); }
+  let lastId = NaN, lastLow = 0;
   for (let i = 0; i < n; i++) {
-    if (hs[i] <= (low.get(ids.getX(i)) as number) + 0.08) {
+    const id = ids.getX(i);
+    if (id !== lastId) { lastId = id; lastLow = low.get(id) as number; }
+    if (hs[i] <= lastLow + 0.08) {
       pos.setXYZ(i, pos.getX(i) - dx * SKIRT, pos.getY(i) - dy * SKIRT, pos.getZ(i) - dz * SKIRT);
     }
   }

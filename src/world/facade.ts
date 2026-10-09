@@ -4,7 +4,7 @@
 import * as THREE from "three/webgpu";
 import {
   abs, attribute, cameraPosition, cameraProjectionMatrix, cameraViewMatrix, clamp, cross, dFdx, dFdy, dot, float, floor,
-  fract, length, max, min, mix, normalize, positionView, positionWorld, sign, smoothstep, step, vec2, vec3, viewportSize,
+  fract, length, max, min, mix, normalize, normalWorldGeometry, positionView, positionWorld, sign, smoothstep, step, vec2, vec3, viewportSize,
 } from "three/tsl";
 import { hash21, vnoise, type N } from "../render/noise";
 import { TEX } from "../render/assets";
@@ -51,7 +51,12 @@ function buildLook(idRaw: N): Out {
   // --- 面の向き（カメラからの相対位置で計算するので、近づいても荒れない） ---
   const pv: N = positionView as N;
   const faceV: N = normalize(cross(dFdx(pv) as N, dFdy(pv) as N));
-  const faceN: N = faceV.transformNormalByInverseViewMatrix(cameraViewMatrix);
+  const faceD: N = faceV.transformNormalByInverseViewMatrix(cameraViewMatrix);
+  // 壁の向き（横方向の座標 u の計算に使う）。画面の変化量から求めた向き（faceD）は、GPU の計算誤差で画素ごとに少し揺れる。
+  // 誤差は「建物の座標の大きさ」倍に拡大されて、窓の縁がざらざらにじむ原因になる。
+  // 建物データ自体の法線（面ごとに一定で揺れない）が faceD とほぼ同じ向きなら、そちらを使う。違うとき（なめらかな法線のデータ）は faceD のまま。
+  const faceG: N = normalize(normalWorldGeometry as N);
+  const faceN: N = normalize(mix(faceD, faceG, step(0.99, dot(faceG, faceD))) as N);
   const wallMask: N = step(abs(faceN.y), 0.5);
   const tangent: N = normalize(vec2(faceN.z.negate(), faceN.x));
   // 1 ピクセルが現実で何メートルか（遠い・斜めほど大きい）
@@ -95,8 +100,8 @@ function buildLook(idRaw: N): Out {
   const isGround: N = float(1.0).sub(step(1.0, v));
 
   // --- 窓の形（種類ごと） ---
-  const l0: N = pick(s, [0.2, 0.0, 0.04, 0.22, 0.3, 0.4]);
-  const r0: N = pick(s, [0.8, 1.0, 0.96, 0.78, 0.7, 0.6]);
+  const l0: N = pick(s, [0.24, 0.0, 0.04, 0.24, 0.3, 0.4]);
+  const r0: N = pick(s, [0.76, 1.0, 0.96, 0.76, 0.7, 0.6]);
   const b0: N = pick(s, [0.34, 0.34, 0.06, 0.3, 0.34, 0.1]);
   const t0: N = pick(s, [0.78, 0.76, 0.94, 0.8, 0.74, 0.9]);
   // 1 階は店先の広いガラス（ガラスの建物は全部ガラスのまま）
@@ -113,13 +118,12 @@ function buildLook(idRaw: N): Out {
   const isCW: N = step(1.5, s).mul(step(s, 2.5));
   const iu: N = floor(u);
   const colId: N = iu.add(floor(h2.mul(7.0)));
-  const period: N = floor(h3.mul(2.999)).add(2.0);
-  // 低層階（1〜5 階）は窓をだいぶ減らして、ただの壁を多くする
-  const lowF: N = float(1.0).sub(smoothstep(1.5, 5.5, v));
-  const periodW: N = mix(mix(period, period.mul(3.0), isBand), mix(float(2.0), float(3.0), isBand), lowF);
+  // 窓は規則正しく並べる: 一定の間隔ごとに壁だけの柱（階段室・柱型）を入れ、あとは各マスに窓。ランダムな欠けはごくまれ
+  const period: N = floor(h3.mul(2.999)).add(3.0);
+  const periodW: N = mix(period, period.add(1.0), isBand);
   const solidCol: N = step(fract(colId.div(periodW)), float(0.5).div(periodW));
   const wb: N = hash21(vec2(iu, floor(v)).add(vec2(h2.mul(31.0).add(7.3), h1.mul(19.0).add(3.1))));
-  const blank: N = step(mix(float(0.86), float(0.4), lowF), wb).mul(float(1.0).sub(isCW));
+  const blank: N = step(0.96, wb).mul(float(1.0).sub(isCW));
   const shopOpen: N = step(0.3, hash(colId.add(h1.mul(59.0)).add(11.0)));
   const openCell: N = max(float(1.0).sub(solidCol).mul(float(1.0).sub(blank)), shop.mul(shopOpen));
   const winM: N = win.mul(mull).mul(openCell);
@@ -148,7 +152,7 @@ function buildLook(idRaw: N): Out {
   const reveal: N = float(1.0).sub(smoothstep(0.78, 1.0, wy).mul(0.45).add(float(1.0).sub(smoothstep(0.0, 0.14, wx)).mul(0.25)).mul(near));
   const glassTone: N = mix(glassKind, glassShop, shop).mul(mix(float(1.0), mix(float(0.72).add(wh.mul(0.55)), float(0.88).add(wh.mul(0.24)), step(1.5, s).mul(step(s, 2.5))), cellFade)).mul(reveal);
   const glassColor: N = mix(glassTone, vec3(0.74, 0.68, 0.56), curtain.mul(0.85));
-  const winAmount0: N = mix(winM.mul(hasWindows), hasWindows.mul(mix(float(0.34), float(0.9), isCW)).mul(mix(float(0.75), float(1.0), isCW)).mul(float(1.0).sub(lowF.mul(0.5))), far);
+  const winAmount0: N = mix(winM.mul(hasWindows), hasWindows.mul(mix(float(0.26), float(0.9), isCW)).mul(mix(float(0.75), float(1.0), isCW)), far);
   // 1 階の店先に、ときどきシャッター（閉店）
   const shutId: N = hash(floor(uMeters.div(3.4)).add(h2.mul(13.0)).add(3.0));
   const shutter: N = shop.mul(step(0.78, shutId)).mul(win).mul(wallMask);
@@ -294,7 +298,7 @@ function buildLook(idRaw: N): Out {
   const roofBase: N = mix(roofGrey, vec3(0.62, 0.34, 0.27), step(0.94, h2)).mul(float(0.85).add(h3.mul(0.2)));
   const rp: N = vec2(positionWorld.x, positionWorld.z);
   const seam: N = max(lineLt(fract(rp.x.div(6.0)), 0.012, pw.div(6.0)), lineLt(fract(rp.y.div(6.0)), 0.012, pw.div(6.0))).mul(float(1.0).sub(smoothstep(0.05, 0.3, pw))).mul(0.18);
-  const roofColor: N = roofBase.mul(mix(vec3(1, 1, 1), concreteD, 0.8)).mul(float(0.8).add(vnoise(rp.mul(0.7)).mul(0.4))).mul(float(0.92).add(vnoise(rp.mul(5.0)).mul(0.16).mul(near))).mul(float(1.0).sub(seam));
+  const roofColor: N = roofBase.mul(mix(vec3(1, 1, 1), concreteD, 0.8)).mul(float(0.8).add(vnoise(rp.mul(0.7)).mul(0.4))).mul(float(1.0).sub(seam));
 
   // --- つや: 壁・屋根はざらざら、ガラスはつるつる＋映り込み ---
   const isCurtainWall: N = isCW;
@@ -325,7 +329,37 @@ export function facadeMaterial(idAttribute: string | null): THREE.MeshStandardNo
   m.roughnessNode = look.roughness;
   m.metalnessNode = look.metalness;
   m.normalNode = look.normal;
+  // 建物データの読み込み側が、使い終わりの建物ごとに材質を dispose する。共有の材質を壊されると、次に使うとき重いシェーダーを作り直して画面が止まるので、無視する
+  m.dispose = () => {};
   cache.set(key, m);
+  return m;
+}
+
+let prepass: THREE.MeshBasicNodeMaterial | null = null;
+/**
+ * 建物の「奥行きだけ」を先に描くための材質（色は描かない）。
+ * 先に奥行きを描いておくと、重い壁の塗りは「実際に見える画素」にだけ実行される（高い建物がずらっと並ぶ通りで、壁の裏側や奥の建物を無駄に塗らない）。
+ * 少しだけ奥にずらして描く（本番の描画が必ず通るように）。
+ */
+export function depthPrepassMaterial(): THREE.MeshBasicNodeMaterial {
+  if (prepass) return prepass;
+  const m = new THREE.MeshBasicNodeMaterial();
+  m.colorWrite = false;
+  m.polygonOffset = true;
+  m.polygonOffsetFactor = 2;
+  m.polygonOffsetUnits = 4;
+  m.dispose = () => {};
+  prepass = m;
+  return m;
+}
+
+let plain: THREE.MeshStandardMaterial | null = null;
+/** 比較用の単色の壁（?facade=0）。凝った塗りを全部やめる */
+export function plainMaterial(): THREE.MeshStandardMaterial {
+  if (plain) return plain;
+  const m = new THREE.MeshStandardMaterial({ color: 0xb8b2a6, roughness: 0.9, metalness: 0 });
+  m.dispose = () => {};
+  plain = m;
   return m;
 }
 
