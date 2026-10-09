@@ -132,19 +132,18 @@ export function setupLook(
   let quality: Quality = "mid";
   const opt = { shadow: true };
 
-  const applyShadow = (size: number) => {
-    sun.shadow.mapSize.set(size, size);
-    if (sun.shadow.map) {
-      sun.shadow.map.dispose();
-      sun.shadow.map = null;
-    }
-  };
+  // 影の絵（シャドウマップ）は、作り直さない。GPU が使っている最中の絵を壊すと、画面が止まる（クラッシュの原因になる）。
+  // 影の「なし」も、光の影をやめるのではなく、濃さ 0 にして描き直しを止めるだけにする
+  // （光の影を切り替えると、全部の材質のシェーダーが作り直しになり、数秒止まる）
+  sun.shadow.mapSize.set(512, 512); // 影の絵は粗くてよい（建物が大きく、縁がぼやけても違和感がない。軽くもなる）
+  sun.castShadow = true;
+  let shadowOn = true;
 
   const setQuality = (q: Quality) => {
     quality = q;
+    shadowOn = q !== "low" && opt.shadow;
+    sun.shadow.intensity = shadowOn ? 1 : 0;
     shadowDirty = true;
-    sun.castShadow = q !== "low" && opt.shadow;
-    applyShadow(512); // 影の絵は粗くてよい（建物が大きく、縁がぼやけても違和感がない。軽くもなる）
   };
 
   const tmp = new THREE.Vector3();
@@ -175,7 +174,7 @@ export function setupLook(
     // 影の絵は毎コマ描き直さない（中・高画質が重い主な理由）。カメラが 70m 動いたとき、または 4 秒ごと、
     // 切り替え直後にだけ描き直す。描き直すときに太陽の位置も一緒に動かすので、影がずれて見えることはない。
     const now = performance.now();
-    if (!shadowFrozen && (shadowEvery || shadowDirty || center.distanceTo(shadowCenter) > (isMobile ? 35 : 50) || now - shadowStamp > 6000)) {
+    if (shadowOn && !shadowFrozen && (shadowEvery || shadowDirty || center.distanceTo(shadowCenter) > (isMobile ? 35 : 50) || now - shadowStamp > 6000)) {
       shadowRedraws++;
       shadowCenter.copy(center);
       shadowStamp = now;

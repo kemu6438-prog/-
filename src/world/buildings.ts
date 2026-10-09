@@ -1,5 +1,6 @@
 // 建物を、車（カメラ）の周りだけ読み込んで表示する。
 import { TilesRenderer } from "3d-tiles-renderer";
+import { PriorityQueue } from "3d-tiles-renderer/core";
 import { GLTFExtensionsPlugin, LoadRegionPlugin, SphereRegion } from "3d-tiles-renderer/plugins";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import * as THREE from "three/webgpu";
@@ -30,6 +31,7 @@ export type BuildingStats = {
 export class Buildings {
   readonly group = new THREE.Group();
   private readonly renderers: { tiles: TilesRenderer; region: SphereRegion }[] = [];
+  private readonly parseQueue = (() => { const q = new PriorityQueue(); q.maxJobs = 2; return q; })();
   private loadedTiles = 0;
   /** 建物タイルの受け取り処理にかかった時間（ms）の、前回取り出してからの合計 */
   private loadMs = 0;
@@ -78,8 +80,12 @@ export class Buildings {
     regions.addRegion(region);
     tiles.registerPlugin(regions);
     tiles.errorTarget = this.errorTarget;
-    tiles.lruCache.minBytesSize = 120 * 1024 ** 2;
-    tiles.lruCache.maxBytesSize = 200 * 1024 ** 2;
+    // 覚えておく量。小さいと、動くたびに捨てては読み直す（無駄な読み込み）。PC は大きめ、スマホは従来どおり
+    const mobile = matchMedia("(pointer: coarse)").matches;
+    tiles.lruCache.minBytesSize = (mobile ? 120 : 200) * 1024 ** 2;
+    tiles.lruCache.maxBytesSize = (mobile ? 200 : 320) * 1024 ** 2;
+    // 建物の読み込み処理（解析・組み立て）は同時に 2 つまで。5 つが同時に終わると、1 コマに処理が集中して止まる
+    tiles.parseQueue = this.parseQueue;
     tiles.setCamera(this.camera);
     this.setResolution(tiles);
     tiles.addEventListener("load-model", ({ scene }) => {

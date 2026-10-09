@@ -2,7 +2,7 @@
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
 /** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
-const BUILD_ID = "17";
+const BUILD_ID = "18";
 import * as THREE from "three/webgpu";
 import { setupLook } from "./render/look";
 import { LocalFrame } from "./core/geo";
@@ -63,6 +63,16 @@ async function main() {
   const isWebGPU = (renderer.backend as any).isWebGPUBackend === true;
   $("backend").textContent = isWebGPU ? "WebGPU" : "WebGL 2（互換）";
   gpuName().then((n) => ($("gpu").textContent = n));
+  // 止まった・落ちたときの原因をログに残す（GPU が止まった理由、GPU の命令の間違い、その他のエラー）
+  {
+    const dev = (renderer.backend as any).device as any;
+    dev?.lost?.then((i: { reason: string; message: string }) => log(`【GPU が停止】${i.reason}: ${i.message}`));
+    let gpuErrs = 0;
+    dev?.addEventListener?.("uncapturederror", (e: { error: { message: string } }) => { if (++gpuErrs <= 5) log(`【GPU エラー】${e.error.message.slice(0, 200)}`); });
+    let jsErrs = 0;
+    window.addEventListener("error", (e) => { if (++jsErrs <= 5) log(`【エラー】${e.message}`); });
+    window.addEventListener("unhandledrejection", (e) => { if (++jsErrs <= 5) log(`【エラー】${String((e.reason as Error)?.message ?? e.reason).slice(0, 200)}`); });
+  }
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.8, 9000);
@@ -111,7 +121,9 @@ async function main() {
   log(`版: ${BUILD_ID}`);
   document.title = `${document.title} (${BUILD_ID})`;
 
+  let placeToken = 0;
   async function loadPlace(p: Place) {
+    const myToken = ++placeToken; // ボタンを続けて押したとき、前の場所の建物が後から混ざらないようにする
     place = p;
     groundH = p.groundH;
     frame = new LocalFrame({ lat: p.lat, lon: p.lon, h: groundH });
@@ -128,6 +140,7 @@ async function main() {
     yaw = 0; pitch = -0.25; orbitT = 0;
     log(`場所: ${p.label} / 建物: LOD${buildings.lod}`);
     const sets = await findBuildingTilesets(p.codes, buildings.lod, log);
+    if (myToken !== placeToken) return;
     for (const s of sets) {
       log(`建物データ: ${s.label}\n  ${s.url}`);
       buildings.add(s.url, s.label);
@@ -259,7 +272,7 @@ async function main() {
       const a = benchSamples;
       benchSamples = null;
       const sorted = [...a].sort((x, y) => x - y);
-      const ms = sorted.length ? sorted[Math.floor(sorted.length / 2)] : NaN; // 中央値
+      const ms = sorted.length ? sorted[Math.floor(sorted.length / 2)] : NaN; // 中央値（コマが 1 つも来なかったら NaN）
       const avg = a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
       res.push({ name, ms });
       log(`  ${name}: 中央 ${ms.toFixed(0)} ms / 平均 ${avg.toFixed(0)} ms（約 ${(1000 / avg).toFixed(0)} コマ/秒）`);

@@ -461,6 +461,8 @@ export class Roads {
         if (!c.alive[i]) continue;
         const it = c.items[i];
         const mg = c.byScale ? c.margin * ((it as { scale?: number }).scale ?? 1) : c.margin;
+        // 前に点検してから、近くの足あとが書き換わっていなければ、点検しない（同じ物を何度も調べ直さない）
+        if (c.version >= 0 && !fp.changedSince(it.x, it.z, mg + 1.5, c.version)) continue;
         if (fp.near(it.x, it.z, mg)) {
           changed = true;
           if (c.nudge > 0 && this.nudge(fp, it, c, mg)) {

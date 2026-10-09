@@ -7,12 +7,17 @@ export class Footprints {
   /** 書き足しのたびに増える番号（置いた物の再点検が必要かの目印） */
   version = 0;
   private readonly blocks = new Map<number, Uint8Array>();
+  /** まとまりごとに、最後に書き換えた時の version（置いた物の再点検を、変わった所の近くだけに絞るため） */
+  private readonly blockVer = new Map<number, number>();
+  private touched = new Set<number>();
   private dirty = false;
 
   clear() {
     this.queue = [];
     this.qPos = 0;
     this.blocks.clear();
+    this.blockVer.clear();
+    this.touched.clear();
     this.version++;
     this.dirty = false;
   }
@@ -44,7 +49,7 @@ export class Footprints {
         // 升の中心が三角形の中（ふちは少しだけ広めにとる）
         if (l1 >= -0.01 && l2 >= -0.01 && 1 - l1 - l2 >= -0.01) {
           const bxx = Math.floor(ix / BLOCK);
-          if (bxx !== cbx || bzz !== cbz) { cbx = bxx; cbz = bzz; cb = this.block(bxx, bzz, true); }
+          if (bxx !== cbx || bzz !== cbz) { cbx = bxx; cbz = bzz; cb = this.block(bxx, bzz, true); this.touched.add((bxx + 32768) * 65536 + (bzz + 32768)); }
           cb![rowOff + ix - bxx * BLOCK] = 1;
         }
       }
@@ -88,7 +93,25 @@ export class Footprints {
 
   /** 書き込みがあったら番号を進める */
   private commit() {
-    if (this.dirty) { this.version++; this.dirty = false; }
+    if (this.dirty) {
+      this.version++;
+      for (const k of this.touched) this.blockVer.set(k, this.version);
+      this.touched.clear();
+      this.dirty = false;
+    }
+  }
+
+  /** (x, z) の半径 r 以内のまとまりに、version より新しい書き込みがあったか（無ければ、再点検は要らない） */
+  changedSince(x: number, z: number, r: number, version: number): boolean {
+    const b0x = Math.floor((x - r) / BLOCK), b1x = Math.floor((x + r) / BLOCK);
+    const b0z = Math.floor((z - r) / BLOCK), b1z = Math.floor((z + r) / BLOCK);
+    for (let bx = b0x; bx <= b1x; bx++) {
+      for (let bz = b0z; bz <= b1z; bz++) {
+        const v = this.blockVer.get((bx + 32768) * 65536 + (bz + 32768));
+        if (v !== undefined && v > version) return true;
+      }
+    }
+    return false;
   }
 
   has(x: number, z: number): boolean {
