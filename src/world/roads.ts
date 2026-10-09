@@ -263,7 +263,8 @@ function chunkedInstances<T extends { x: number; z: number }>(
   place: (it: T, m: THREE.Matrix4) => void,
   opts: { nudge?: number; byScale?: boolean; cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number; receive?: boolean; margin?: number; origin?: [number, number] } = {},
 ) {
-  const cell = opts.cell ?? 250;
+  // タイルの原点（角）が渡されたときは、タイル 1 枚 = 1 つの塊。塊が多いと、毎コマの描画の準備（CPU）が重くなる
+  const cell = opts.origin ? 1000 : (opts.cell ?? 250);
   const [ox, oz] = opts.origin ?? [0, 0];
   const bins = new Map<string, T[]>();
   for (const it of items) {
@@ -429,8 +430,11 @@ export class Roads {
   }
 
   /** 毎コマ呼ぶ。カメラから遠い塊は描かず、近い塊だけ影を落とす */
+  private lodTick = 0;
   updateLod(cam: THREE.Vector3) {
     this.refreshFlat();
+    // 出す/隠すの判定は 3 コマに 1 回で足りる（8 m/s で動いても 1 コマ 0.15 m）
+    if (this.lodTick++ % 3 !== 0 && !this.flatDirty) return;
     for (const { mesh: m, lod: l } of this.flat) {
       const b = m.boundingSphere;
       if (!b) continue;
@@ -442,7 +446,7 @@ export class Roads {
 
   private cullCursor = 0;
   /** 建物の足あとの中に入ってしまった物（木など）を、動かすか消す。近くの塊だけを、1 コマあたり少しずつ点検する */
-  cullByFootprints(fp: Footprints, cam: THREE.Vector3, budgetMs = 1.5) {
+  cullByFootprints(fp: Footprints, cam: THREE.Vector3, budgetMs = 0.8) {
     this.refreshFlat();
     const t0 = performance.now();
     const all = this.flat;
@@ -451,8 +455,7 @@ export class Roads {
       const mesh = all[(this.cullCursor + step) % N].mesh;
       const c = mesh.userData.cull as CullInfo | undefined;
       if (!c || c.version === fp.version) continue;
-      const b = mesh.boundingSphere;
-      if (b && Math.hypot(b.center.x - cam.x, b.center.z - cam.z) - b.radius > 700) continue; // 遠い塊は、近づいてから
+      if (!mesh.visible) continue; // 描かれていない塊（遠い・まだ表示待ち）は、見えるようになってから点検する
       let changed = false;
       for (let i = 0; i < c.items.length; i++) {
         if (!c.alive[i]) continue;
@@ -730,7 +733,7 @@ export class Roads {
     const fg = new THREE.Group();
     fg.name = `road-furniture-${t.key}`;
     const lods: Lod[] = [];
-    const origin: [number, number] = [t.cx, t.cz]; // 塊の区切りはタイルの中心から（タイルをまたぐ小さな塊が増えないように）
+    const origin: [number, number] = [t.cx - 500, t.cz - 500]; // タイル 1 枚を 1 つの塊にする（原点 = 中心から −500 m なので、タイル内は必ず同じ升に入る）
     const Y = new THREE.Vector3(0, 1, 0);
     const placeTree = (tr: TreeInst, m: THREE.Matrix4) => {
       m.compose(new THREE.Vector3(tr.x, 0, tr.z), new THREE.Quaternion().setFromAxisAngle(Y, tr.rot), new THREE.Vector3(tr.scale, tr.scale * (0.9 + tr.tint * 0.25), tr.scale));

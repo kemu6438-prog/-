@@ -179,7 +179,7 @@ export class Buildings {
 
   update() {
     this.camera.updateMatrixWorld();
-    this.footprints.step(2); // 屋根の輪郭の書き込み（1 コマ 2 ミリ秒まで）
+    this.footprints.step(1.2); // 屋根の輪郭の書き込み（1 コマ 1.2 ミリ秒まで）
     // 読み込む範囲は、地球中心座標（建物データの座標）で指定する
     const centerEcef = this.tmpEcef.copy(this.camera.position).applyMatrix4(this.frame.localToEcef);
     for (const r of this.renderers) {
