@@ -49,7 +49,7 @@ async function gpuName(): Promise<string> {
 }
 
 async function main() {
-  const renderer = new THREE.WebGPURenderer({ antialias: true });
+  const renderer = new THREE.WebGPURenderer({ antialias: true, forceWebGL: new URLSearchParams(location.search).get("gl") === "1" });
   // 解像度（画面の細かさ）。重いときは自動で下げ、余裕があれば戻す
   const baseRatio = Math.min(window.devicePixelRatio, isMobile ? 1.25 : 1.5);
   let curRatio = baseRatio;
@@ -295,8 +295,8 @@ async function main() {
   // --- カメラ ---
   let mode: "auto" | "free" | "drive" = "auto";
   let driver: Driver | null = null;
-  const interior = createInterior(); // 車の中は別の場面にして、街のあとに重ね描きする
-  interior.setSun(look.sunDir);
+  const interior = createInterior(); // 車の中（拡大して置き、奥→手前の順で重ねる）
+  scene.add(interior.car);
   let seat: SeatId = "driver";
   let lookYaw = 0, lookPitch = 0;
   let yaw = 0, pitch = -0.25, orbitT = 0;
@@ -313,6 +313,7 @@ async function main() {
     $("drive").classList.toggle("on", m === "drive");
     $("hud").style.display = m === "drive" ? "block" : "none";
     $("hudctl").style.display = m === "drive" ? "block" : "none";
+    interior.car.visible = m === "drive";
 
     $("fwd").style.display = m === "free" && isMobile ? "block" : "none";
   };
@@ -451,12 +452,7 @@ async function main() {
       const ez = driver.pose.z - sy * st.x + cy * st.z;
       camera.position.set(ex, st.y, ez);
       camera.rotation.set(-0.02 + lookPitch, driver.yaw + lookYaw, 0, "YXZ");
-      // 車の中の場面: 車を原点に置き、カメラは車の座標で（遠くへ行っても精度が落ちない）
-      interior.car.rotation.set(0, driver.yaw, 0);
-      const ic = interior.camera;
-      ic.position.set(cy * st.x + sy * st.z, st.y, -sy * st.x + cy * st.z);
-      ic.rotation.copy(camera.rotation);
-      if (ic.aspect !== camera.aspect || ic.fov !== camera.fov) { ic.aspect = camera.aspect; ic.fov = camera.fov; ic.updateProjectionMatrix(); }
+      interior.place(driver.pose.x, driver.pose.z, driver.yaw, st, camera.position);
       yaw = driver.yaw;
       pitch = -0.02;
       const w = driver.waiting;
@@ -502,13 +498,6 @@ async function main() {
     const t2 = performance.now();
     look.update();
     for (let i = 0; i < renderRepeat; i++) look.render();
-    if (mode === "drive" && driver) {
-      // 車の中は、街を描いたあとに奥行きだけ消して重ねる（窓枠・ダッシュボードが街に隠れず、近くを切らない）
-      renderer.autoClear = false;
-      renderer.clearDepth();
-      renderer.render(interior.scene, interior.camera);
-      renderer.autoClear = true;
-    }
     const t3 = performance.now();
     jsUpd += t2 - t1;
     jsRen += t3 - t2;

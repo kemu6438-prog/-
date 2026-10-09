@@ -16,6 +16,9 @@ export const SEATS = {
 } as const;
 export type SeatId = keyof typeof SEATS;
 
+/** 全体の明るさ（トーンマップで暗くなる分を補う） */
+const BRIGHT = 1.9;
+
 function buildGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const m4 = new THREE.Matrix4();
@@ -25,10 +28,16 @@ function buildGeometry(): THREE.BufferGeometry {
   const put = (g: THREE.BufferGeometry, color: number, mat: THREE.Matrix4) => {
     g.applyMatrix4(mat);
     g.deleteAttribute("uv");
+    // 光源は使わず、面の向きで明るさを決めておく（上向きは明るく、横は暗め）
     const c = new THREE.Color(color);
     const n = g.getAttribute("position").count;
+    const nor = g.getAttribute("normal");
     const arr = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+    for (let i = 0; i < n; i++) {
+      const ny = nor ? nor.getY(i) : 0, nz = nor ? nor.getZ(i) : 0;
+      const k = BRIGHT * (0.62 + 0.3 * Math.max(ny, 0) - 0.18 * Math.max(-ny, 0) + 0.08 * nz);
+      arr[i * 3] = c.r * k; arr[i * 3 + 1] = c.g * k; arr[i * 3 + 2] = c.b * k;
+    }
     g.setAttribute("color", new THREE.BufferAttribute(arr, 3));
     parts.push(g.index ? g.toNonIndexed() : g);
   };
@@ -45,29 +54,32 @@ function buildGeometry(): THREE.BufferGeometry {
   };
   const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 
-  const DARK = 0x2a2c31, DARKER = 0x17181b, TRIM = 0x5b5f66, LINER = 0xb9b7ad, SEAT = 0x3b414d, BODY = 0xcfd3d7, CARPET = 0x232427;
+  const DARK = 0x4a4d55, DARKER = 0x2a2c31, TRIM = 0x8a8e96, LINER = 0xc9c7bd, SEAT = 0x5c6577, BODY = 0xd5d9dd, CARPET = 0x3a3b40;
 
+  // 描く順番は「奥 → 手前」（奥行きの比較を使わないため）: 車体の箱 → ダッシュボード → ドア → 柱・天井 → 座席
+  // 前: ボンネット（地面まで届く箱）
+  box(1.64, 0.9, 1.65, BODY, 0, 0.45, -1.93);
+  // 後ろ: 荷室（地面まで届く箱）
+  box(1.64, 0.94, 0.9, BODY, 0, 0.47, 2.35);
   // 床
   box(1.64, 0.05, 3.2, CARPET, 0, 0.27, 0.5);
-  box(0.22, 0.28, 1.2, DARK, 0, 0.42, 0.1); // センターコンソール
-
-  // 前: ボンネット（地面まで届く箱）とダッシュボード
-  box(1.64, 0.9, 1.65, BODY, 0, 0.45, -1.93);
+  // ダッシュボード
   box(1.64, 0.82, 0.5, DARK, 0, 0.41, -0.95);
   box(1.64, 0.24, 0.5, DARK, 0, 0.78, -0.95);
   box(1.52, 0.05, 0.5, DARKER, 0, 0.92, -0.93, 0.08); // 上の面（少し手前へ傾ける）
   box(0.5, 0.12, 0.26, DARKER, 0.36, 1.0, -0.84); // メーターのひさし
   box(1.64, 0.09, 0.1, DARKER, 0, 0.95, -1.18); // ガラスの下の黒い帯
-
-  // 後ろ: 荷室（地面まで届く箱）
-  box(1.64, 0.94, 0.9, BODY, 0, 0.47, 2.35);
+  // 後ろの壁と棚
   box(1.64, 0.94, 0.12, DARK, 0, 0.47, 1.9);
-  box(1.5, 0.06, 0.4, DARKER, 0, 0.97, 1.95); // 後ろの棚
+  box(1.5, 0.06, 0.4, DARKER, 0, 0.97, 1.95);
+  box(0.22, 0.28, 1.2, DARK, 0, 0.42, 0.1); // センターコンソール
 
   for (const sx of [-1, 1]) {
     // 横のドア（地面まで届く）。窓の下から下は全部ふさぐ
     box(0.12, 0.94, 2.95, DARK, sx * 0.8, 0.47, 0.375);
     box(0.13, 0.04, 2.95, TRIM, sx * 0.8, 0.96, 0.375); // 窓の下枠
+  }
+  for (const sx of [-1, 1]) {
     // 窓枠: A ピラー、屋根のふち、B ピラー、C ピラー
     bar(V(sx * 0.8, 0.93, -1.1), V(sx * 0.66, 1.52, -0.28), 0.09, 0.075, DARK);
     box(0.07, 0.07, 2.05, DARK, sx * 0.745, 1.52, 0.78);
@@ -84,42 +96,52 @@ function buildGeometry(): THREE.BufferGeometry {
   box(0.22, 0.07, 0.04, DARKER, 0, 1.38, -0.4);
   box(0.03, 0.12, 0.03, DARKER, 0, 1.45, -0.38);
 
-  // 座席
+  // 座席（いちばん手前）。奥の席から先に描く
   const seat = (x: number, z: number, withHead = true) => {
     box(0.5, 0.13, 0.5, SEAT, x, 0.52, z);
     box(0.5, 0.6, 0.12, SEAT, x, 0.86, z + 0.3, 0.12);
     if (withHead) box(0.26, 0.2, 0.1, SEAT, x, 1.27, z + 0.35);
   };
-  seat(0.36, 0.3);
-  seat(-0.36, 0.3);
   seat(0.36, 1.25);
   seat(-0.36, 1.25);
   seat(0, 1.25, false);
+  seat(0.36, 0.3);
+  seat(-0.36, 0.3);
 
   return mergeGeometries(parts)!;
 }
 
-/** 車の中だけの場面（街とは別。光は太陽の向きに合わせる） */
+/**
+ * 車の中。街と同じ場面に入れる。
+ * 近くが切れないよう、目の位置を中心に K 倍に拡大して置く（拡大しても画面での見え方は変わらない）。
+ * こうすると、街側のカメラの「近くを切る距離」(0.8 m) を変えずに済む。
+ * 拡大すると地面に埋まって見えなくなるので、奥行きの比較は使わず、描く順番（奥 → 手前）で重ねる。
+ */
+export const INTERIOR_SCALE = 4;
+
 export function createInterior() {
-  const scene = new THREE.Scene();
   const car = new THREE.Group();
   car.name = "car-interior";
-  const mesh = new THREE.Mesh(
-    buildGeometry(),
-    new THREE.MeshLambertNodeMaterial({ vertexColors: true }),
-  );
+  const mat = new THREE.MeshBasicNodeMaterial({ vertexColors: true });
+  mat.fog = false;
+  mat.depthTest = false; // 街より手前に描く
+  mat.depthWrite = true; // 暗がりの計算が奥行きを読むので、書き込みだけは行う
+  const mesh = new THREE.Mesh(buildGeometry(), mat);
   mesh.frustumCulled = false;
+  mesh.renderOrder = 1000;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
   car.add(mesh);
-  scene.add(car);
-  scene.add(new THREE.HemisphereLight(0xe6efff, 0x6a6458, 1.5));
-  const sun = new THREE.DirectionalLight(0xfff0d8, 1.9);
-  scene.add(sun, sun.target);
-  const camera = new THREE.PerspectiveCamera(65, 1, 0.05, 30);
+  car.visible = false;
   return {
-    scene,
     car,
-    camera,
-    /** 太陽の向き（街と同じ向き。世界の座標） */
-    setSun(dir: THREE.Vector3) { sun.position.copy(dir).multiplyScalar(10); },
+    /** 車の位置・向き・目の位置（車の座標）から、拡大した車の置き場所を決める */
+    place(carX: number, carZ: number, yaw: number, eye: THREE.Vector3Like, eyeWorld: THREE.Vector3Like) {
+      const k = INTERIOR_SCALE;
+      void eye;
+      car.scale.setScalar(k);
+      car.rotation.set(0, yaw, 0);
+      car.position.set(k * carX + (1 - k) * eyeWorld.x, (1 - k) * eyeWorld.y, k * carZ + (1 - k) * eyeWorld.z);
+    },
   };
 }

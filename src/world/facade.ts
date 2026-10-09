@@ -29,7 +29,9 @@ const pick = (s: N, vals: number[]): N => {
  * 0 事務所ビル（格子の窓）/ 1 横長の連続窓 / 2 ガラスのカーテンウォール
  * 3 集合住宅（ベランダ）/ 4 レンガ・タイル張り / 5 石造り（縦長のスリット窓）
  */
-function buildLook(id: N): Out {
+function buildLook(idRaw: N): Out {
+  // 建物 ID は頂点の間で補間されるので、ごくわずかな誤差が出る。乱数は誤差に敏感なので、整数に丸めてから使う（これが無いと壁が砂嵐のようにちらつく）
+  const id: N = idRaw.add(0.5).floor();
   const h1 = hash(id);
   const h2 = hash(id.add(17.3));
   const h3 = hash(id.add(41.7));
@@ -292,7 +294,8 @@ function buildLook(id: N): Out {
   const roughness: N = mix(float(0.9), mix(float(0.88), glassRough, winAmount), wallMask);
   const metalness: N = winAmount.mul(float(1.0).sub(curtain)).mul(mix(float(0.55), float(0.8), isCurtainWall)).mul(wallMask);
 
-  return { color: mix(roofColor, wallColor, wallMask), roughness, metalness, normal };
+  const outc: N = mix(roofColor, wallColor, wallMask);
+  return { color: outc, roughness, metalness, normal };
 }
 
 const cache = new Map<string, THREE.MeshStandardNodeMaterial>();
