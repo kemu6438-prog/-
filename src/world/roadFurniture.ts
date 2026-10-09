@@ -109,7 +109,7 @@ export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { tr
           const x = q.x + -q.dz * sg * (hr + Math.min(1.3, sw * 0.5));
           const z = q.z + q.dx * sg * (hr + Math.min(1.3, sw * 0.5));
           if (x * x + z * z > R2) continue;
-          if (r() > treeLine * 0.444) continue; // 木は、もとの 2/3 の、さらに 2/3（約 4/9）に間引く
+          if (r() > treeLine * 0.8) continue; // 木は絵の板（軽い）になったので、本数を増やす
           if (grid.blocked(x, z, line)) continue;
           trees.push({ x, z, rot: r() * 6.283, scale: 0.8 + r() * 0.55, tint: r() });
         }
@@ -130,14 +130,14 @@ export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { tr
         }
         // 低木（丸い茂み）
         for (const q of walk(line, rp() * 6, 5.5, () => (rp() - 0.5) * 4)) {
-          if (!edgeFree(q.s, 9) || rp() > 0.42) continue;
+          if (!edgeFree(q.s, 9) || rp() > 0.5) continue;
           const o = at(q, hr + sw * (0.55 + rp() * 0.4));
           if (!ok(o.x, o.z)) continue;
           shrubs.push({ x: o.x, z: o.z, rot: rp() * 6.283, scale: 0.7 + rp() * 0.8, tint: rp() });
         }
         // 草むら（縁石ぞい・歩道のすみ）
         for (const q of walk(line, rp() * 3, 2.6, () => (rp() - 0.5) * 2)) {
-          if (!edgeFree(q.s, 8) || rp() > 0.55) continue;
+          if (!edgeFree(q.s, 8) || rp() > 0.7) continue;
           const o = at(q, rp() < 0.5 ? hr + 0.12 + rp() * 0.25 : hr + sw - 0.1 + rp() * 0.9);
           if (!ok(o.x, o.z)) continue;
           tufts.push({ x: o.x, z: o.z, rot: rp() * 6.283, scale: 0.8 + rp() * 1.1, tint: rp() });

@@ -2,7 +2,7 @@
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
 /** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
-const BUILD_ID = "13";
+const BUILD_ID = "14";
 import * as THREE from "three/webgpu";
 import { setupLook } from "./render/look";
 import { LocalFrame } from "./core/geo";
@@ -507,7 +507,7 @@ async function main() {
     roads.updateLod(camera.position);
     if (footprintCull) {
       roads.cullByFootprints(buildings.footprints, camera.position);
-      if (roads.culled !== lastCulled && now - lastCullLog > 5000) { lastCulled = roads.culled; lastCullLog = now; log(`建物と重なる木・小物を消した: ${roads.culled} 個`); }
+      if (roads.culled + roads.moved !== lastCulled && now - lastCullLog > 5000) { lastCulled = roads.culled + roads.moved; lastCullLog = now; log(`建物と重なる木・小物: 消した ${roads.culled} 個 / ずらして置き直した ${roads.moved} 個`); }
     }
     const t1 = performance.now();
     buildings.update();

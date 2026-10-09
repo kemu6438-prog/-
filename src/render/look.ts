@@ -5,6 +5,7 @@ import * as THREE from "three/webgpu";
 import { SkyMesh } from "three/addons/objects/SkyMesh.js";
 import { float, length, mix, positionView, positionWorld, smoothstep, vec2, vec3 } from "three/tsl";
 import { vnoise, type N } from "./noise";
+import { makeClouds } from "./clouds";
 
 export type Quality = "low" | "mid";
 
@@ -56,9 +57,12 @@ export function setupLook(
   sky.rayleigh.value = 1.3;
   sky.mieCoefficient.value = 0.004;
   sky.mieDirectionalG.value = 0.82;
-  sky.cloudCoverage.value = 0.45;
+  sky.cloudCoverage.value = 0; // 雲は自前（clouds.ts）。three 付属の雲は模様が粗く重いので使わない
   sky.sunPosition.value.copy(sunDir);
   group.add(sky);
+  const clouds = makeClouds(sunDir, num("clouds", 0.5));
+  clouds.visible = num("clouds", 0.5) > 0;
+  group.add(clouds);
 
   // --- 空の映り込み用の環境（太陽の円盤は消して作る） ---
   const envScene = new THREE.Scene();
@@ -68,7 +72,7 @@ export function setupLook(
   envSky.rayleigh.value = sky.rayleigh.value;
   envSky.mieCoefficient.value = sky.mieCoefficient.value;
   envSky.mieDirectionalG.value = sky.mieDirectionalG.value;
-  envSky.cloudCoverage.value = sky.cloudCoverage.value;
+  envSky.cloudCoverage.value = 0;
   envSky.sunPosition.value.copy(sunDir);
   envSky.showSunDisc.value = 0;
   envScene.add(envSky);
@@ -78,7 +82,7 @@ export function setupLook(
   scene.environmentIntensity = num("env", 0.22);
 
   // --- 光 ---
-  const hemi = new THREE.HemisphereLight(0xe6efff, 0x9a8f78, 0.14);
+  const hemi = new THREE.HemisphereLight(0xe6efff, 0x9a8f78, 0.11);
   group.add(hemi);
   const sun = new THREE.DirectionalLight(0xfff0d8, num("sun", 2.6));
   sun.castShadow = true;
@@ -117,6 +121,8 @@ export function setupLook(
     const lot: N = mix(vec3(0.42, 0.41, 0.39), vec3(0.54, 0.52, 0.48), n2)
       .mul(float(0.92).add(n2.mul(0.16)));
     const k: N = smoothstep(0.62, 0.78, n1);
+    // 影の濃淡: 地面の「影の中の明るさ」に、大きなむら（広場ごと・街区ごとの違い）をつける
+    groundMaterial.aoNode = mix(float(0.55), float(1.0), smoothstep(0.15, 0.85, vnoise(p.mul(0.021).add(vec2(37.0, 11.0)))));
     groundMaterial.colorNode = mix(lot.mul(TEX.concrete.detail(p)), grass, k).mul(n3.mul(0.14).add(0.93));
   }
 
@@ -136,7 +142,7 @@ export function setupLook(
     quality = q;
     shadowDirty = true;
     sun.castShadow = q !== "low" && opt.shadow;
-    applyShadow(1024);
+    applyShadow(512); // 影の絵は粗くてよい（建物が大きく、縁がぼやけても違和感がない。軽くもなる）
   };
 
   const tmp = new THREE.Vector3();
@@ -150,6 +156,7 @@ export function setupLook(
 
   const update = () => {
     sky.position.copy(camera.position);
+    clouds.position.copy(camera.position);
     // 影の範囲: カメラの真下を中心にする（向きを変えても動かない）。
     // 以前は「向いている先」を中心にしていたので、視点を回すたびに影の絵を丸ごと描き直して、ガクッと引っかかっていた
     const R = isMobile ? 240 : 320;

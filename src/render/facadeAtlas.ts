@@ -133,19 +133,36 @@ function pier(p: Pen, r: () => number, ac: boolean) {
   }
 }
 
-type Cell = (p: Pen, r: () => number, i: number, j: number) => void;
+type Cell = (p: Pen, r: () => number, i: number, j: number, win: boolean) => void;
+
+/**
+ * どのマスに窓・バルコニーなどを描くか（X = 描く、. = 何もない壁）。8 マス × 4 階。
+ * 現実の建物は、何もない壁が 6 割ほどで、窓などがあるのは 4 割ほど。縦に筋が通るように並べつつ、少しずらす。
+ * （カーテンウォール = 2 は、もともと全面ガラスの建物なので全部描く）
+ */
+const WIN_MASK: string[][] = [
+  ["XX..X.X.", "X..XX.X.", "XX..X.X.", "X.X.X..X"], // 0 事務所
+  ["XXXX.XX.", "XXXX.XX.", "XXXX.XX.", "XXXX.XX."], // 1 連続窓（途中に壁の区切り）
+  ["XXXXXXXX", "XXXXXXXX", "XXXXXXXX", "XXXXXXXX"], // 2 カーテンウォール
+  ["X.X.X...", "X..XX...", "X.X.X...", "X..XX..."], // 3 集合住宅
+  ["X..X.X..", "X.X..X..", "X..X.X..", ".X.X.X.."], // 4 レンガ
+  ["X...X...", ".X...X..", "X...X...", ".X...X.."], // 5 石造り
+];
+const hasWin = (kind: number, i: number, j: number) => WIN_MASK[kind][j][i] === "X";
 
 const cellKinds: Cell[] = [
   // 0 事務所ビル（格子の窓）
-  (p, r, i) => {
+  (p, r, i, _j, win) => {
     if (i % 4 === 3) { pier(p, r, true); slab(p); return; }
-    windowAt(p, r, 31, 28, 97, 84, GLASS, 0.18);
+    if (win) {
+      windowAt(p, r, 31, 28, 97, 84, GLASS, 0.18);
+      p.tint(33, 92, 62, 28, "#000000", 0.045); // 窓の下の汚れ
+    }
     slab(p);
-    p.tint(33, 92, 62, 28, "#000000", 0.045); // 窓の下の汚れ
   },
   // 1 横長の連続窓
-  (p, r, i) => {
-    if (i === 7) { pier(p, r, false); slab(p); return; }
+  (p, r, i, _j, win) => {
+    if (i === 7 || !win) { if (i === 7) pier(p, r, false); slab(p); return; }
     p.rect(0, 28, BAY_PX, 60, FRAME, 0);
     p.vgrad(0, 31, BAY_PX, 54, pickOf(r, GLASS), "#2d4a70", 1);
     p.tint(0, 31, BAY_PX, 20, "#ffffff", 0.12);
@@ -168,9 +185,10 @@ const cellKinds: Cell[] = [
     if (r() < 0.08) p.rect(5, 8, BAY_PX - 10, 90, pickOf(r, CURTAIN), 0.3);
   },
   // 3 集合住宅（ベランダ）
-  (p, r, i) => {
+  (p, r, i, _j, win) => {
     if (i % 4 === 3) { pier(p, r, true); slab(p, BAY_PX, 8); return; }
     if (i % 2 === 1) p.tint(0, 0, BAY_PX, FLOOR_PX, "#000000", 0.05); // 縦縞の色パネル
+    if (!win) { slab(p, BAY_PX, 8); return; }
     windowAt(p, r, 31, 36, 97, 88, GLASS, 0.4, 2);
     // ベランダの手すり
     p.rect(6, 98, 116, 22, "#c8c5be", 0);
@@ -180,26 +198,26 @@ const cellKinds: Cell[] = [
     if (r() < 0.3) p.rect(20 + r() * 40, 86, 30, 12, "#e8e6e0", 0); // 洗濯物・ふとん
   },
   // 4 レンガ・タイル張り
-  (p, r, i) => {
+  (p, r, i, _j, win) => {
     // 目地
     for (let y = 6; y < FLOOR_PX; y += 8) {
       p.tint(0, y, BAY_PX, 1.3, "#6a625a", 0.22);
       const off = ((y / 8) | 0) % 2 === 0 ? 0 : 8;
       for (let x = off; x < BAY_PX; x += 16) p.tint(x, y - 8, 1.2, 8, "#6a625a", 0.16);
     }
-    if (i % 4 === 3) { slab(p, BAY_PX, 5); return; }
+    if (i % 4 === 3 || !win) { slab(p, BAY_PX, 5); return; }
     p.rect(34, 26, 60, 4, "#d9d6cf", 0); // まぐさ（窓の上の石）
     windowAt(p, r, 38, 32, 90, 88, GLASS_DARK, 0.25, 4);
     slab(p, BAY_PX, 5);
   },
   // 5 石造り（縦長のスリット窓）
-  (p, r, i) => {
+  (p, r, i, _j, win) => {
     for (let y = 18; y < FLOOR_PX; y += 19) {
       p.tint(0, y, BAY_PX, 1.4, "#55524c", 0.22);
       const off = ((y / 19) | 0) % 2 === 0 ? 0 : 38;
       for (let x = off; x < BAY_PX; x += 76) p.tint(x, y - 19, 1.4, 19, "#55524c", 0.16);
     }
-    if (i % 4 === 3) { slab(p, BAY_PX, 6); return; }
+    if (i % 4 === 3 || !win) { slab(p, BAY_PX, 6); return; }
     windowAt(p, r, 52, 12, 76, 100, GLASS_DARK, 0.15, 3);
     slab(p, BAY_PX, 6);
   },
@@ -208,7 +226,7 @@ const cellKinds: Cell[] = [
 /** 1 階（店先）の 1 マス。i = 0..7 */
 function groundCell(kind: number, p: Pen, r: () => number, i: number, signPair: string, hasAwning: boolean, shutter: boolean) {
   const glassOnly = kind === 1 || kind === 2;
-  const solid = !glassOnly && i % 4 === 3;
+  const solid = !glassOnly && (i === 3 || i === 5 || i === 7); // 店先は 8 マス中 5 つ。残りは壁・入口の柱
   // 看板の帯
   if (!solid || r() < 0.5) {
     p.rect(0, 5, BAY_PX, 24, signPair, 0);
@@ -253,7 +271,7 @@ function paintUpper(c: C2, m: C2, kind: number, top: number) {
         p.rect(0, 0, BAY_PX, FLOOR_PX, WALL, 0);
         p.tint(0, 0, BAY_PX, FLOOR_PX, "#000000", 0.0);
         const r = rng(kind * 1009 + j * 31 + i * 7 + 5);
-        cellKinds[kind](p, r, i, j);
+        cellKinds[kind](p, r, i, j, hasWin(kind, i, j));
         c.restore(); m.restore();
       }
     }

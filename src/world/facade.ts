@@ -13,7 +13,7 @@ import { ATLAS_H, BAYS, FLOORS, FLOOR_PX, GROUND_H, GUTTER, KIND_BLOCK, UPPER_BL
 /** 0〜1 の疑似乱数（建物 ID 用） */
 const hash = (x: N): N => fract(x.mul(12.9898).add(78.233).sin().mul(43758.5453));
 
-type Out = { color: N; roughness: N; metalness: N };
+type Out = { color: N; roughness: N; metalness: N; ao: N };
 
 /** 番号(0..5)ごとの数値を選ぶ（s は 0〜5 の小数） */
 const pick = (s: N, vals: number[]): N => {
@@ -42,8 +42,8 @@ function buildLook(idRaw: N): Out {
   const y: N = positionWorld.y;
 
   // 外観の種類。高いところ(36m〜)は、低層向きの種類をやめて事務所・連続窓・ガラスにする（下が低層、上が高層）
-  const s0: N = step(0.25, hs).add(step(0.4, hs)).add(step(0.55, hs)).add(step(0.75, hs)).add(step(0.9, hs));
-  const sTall: N = mix(s0, floor(h2.mul(2.999)), step(2.5, s0));
+  const s0: N = step(0.28, hs).add(step(0.46, hs)).add(step(0.54, hs)).add(step(0.76, hs)).add(step(0.92, hs));
+  const sTall: N = mix(s0, step(0.45, h2).add(step(0.78, h2)), step(2.5, s0));
   const s: N = mix(s0, sTall, step(36.0, y));
 
   const bayW: N = pick(s, [3.4, 2.8, 1.8, 3.0, 3.2, 2.4]);
@@ -134,7 +134,9 @@ function buildLook(idRaw: N): Out {
   const metalness: N = glass.mul(mix(float(0.55), float(0.8), isCurtainWall)).mul(wallMask);
 
   const outc: N = mix(roofColor, wallColor, wallMask);
-  return { color: outc, roughness, metalness };
+  // 影の濃淡: 空の光（影の中の明るさ）は、街の谷間の低い階ほど届かず、高い所ほどよく届く。建物ごとにも少し違う
+  const ao: N = mix(float(0.42), float(1.0), smoothstep(0.0, 45.0, y)).mul(float(0.78).add(h3.mul(0.3)));
+  return { color: outc, roughness, metalness, ao };
 }
 
 const cache = new Map<string, THREE.MeshStandardNodeMaterial>();
@@ -155,6 +157,7 @@ export function facadeMaterial(idAttribute: string | null): THREE.MeshStandardNo
   m.colorNode = look.color;
   m.roughnessNode = look.roughness;
   m.metalnessNode = look.metalness;
+  m.aoNode = look.ao;
   // 建物データの読み込み側が、使い終わりの建物ごとに材質を dispose する。共有の材質を壊されると、次に使うとき重いシェーダーを作り直して画面が止まるので、無視する
   m.dispose = () => {};
   cache.set(key, m);

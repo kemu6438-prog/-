@@ -1,6 +1,6 @@
 // 道路・歩道・街路樹・街灯などを、国土地理院の道路データから作って画面に置く。
 import * as THREE from "three/webgpu";
-import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import {
   attribute, clamp, dFdx, dFdy, float, floor, fract, length, max, min, mix, positionView, positionWorld,
   smoothstep, step, vec2, vec3, vertexColor,
@@ -12,8 +12,9 @@ import {
   ZOOM, analyzeNodes, fetchRoadTile, latToTileY, lonToTileX, parseRoadLayer, type RoadLine, type RoadNode,
 } from "./roadData";
 import { buildRibbon, roadExtra, sidewalkExtra, type Ribbon } from "./roadGeometry";
-import { placeFurniture, type Furniture } from "./roadFurniture";
+import { placeFurniture, type Furniture, type TreeInst } from "./roadFurniture";
 import type { Footprints } from "./footprints";
+import { bushCardGeometry, cardMaterial, treeCardGeometry, tuftCardGeometry } from "../render/plants";
 
 // ---------------------------------------------------------------------------
 // 見た目（シェーダー）
@@ -59,14 +60,16 @@ function roadMaterial(level: number): THREE.MeshStandardNodeMaterial {
   const n2: N = vnoise(pw.mul(0.35));
   const g1: N = vnoise(pw.mul(22.0));
   const lane: N = abs(fract(abs(u).div(3.5)).sub(0.5)); // 車線の中央で 0.5 付近
-  const wheel: N = smoothstep(0.1, 0.0, abs(lane.sub(0.36))).mul(0.5).add(0.0).mul(step(1.5, rank)); // 車輪の通る所は少し明るく磨かれる
+  // 交差点の中（ほかの道と重なる所）では、路肩の汚れ・タイヤの跡を出さない。出すと、横切る道の上に暗い帯・明るい帯が見えて、継ぎ目が目立つ
+  const jk: N = smoothstep(-0.3, 1.5, dS).mul(smoothstep(-0.3, 1.5, dE));
+  const wheel: N = smoothstep(0.1, 0.0, abs(lane.sub(0.36))).mul(0.5).add(0.0).mul(step(1.5, rank)).mul(jk); // 車輪の通る所は少し明るく磨かれる
   const gw: N = float(1.0).sub(TEX.asphalt.on.mul(0.75)); // 素材が読めたら自作の粒を弱める
   const base: N = mix(vec3(0.17, 0.17, 0.18), vec3(0.3, 0.295, 0.29), n2)
     .mul(float(0.9).add(g1.mul(0.3).mul(near).mul(gw)))
     .mul(float(1.0).add(wheel.mul(0.1)))
     .mul(TEX.asphalt.detail(pw)); // ネットの素材（読み込めたら）の本物のアスファルトの粒（1 枚だけ読む＝軽い）
   // 路肩（縁）は少し汚れて暗い
-  const gutter: N = smoothstep(hr.sub(0.7), hr.sub(0.05), abs(u));
+  const gutter: N = smoothstep(hr.sub(0.7), hr.sub(0.05), abs(u)).mul(jk);
   const asphalt: N = mix(base, base.mul(vec3(0.78, 0.76, 0.72)), gutter);
 
   // --- 白線 ---
@@ -155,11 +158,6 @@ function sidewalkMaterial(): THREE.MeshStandardNodeMaterial {
 // ---------------------------------------------------------------------------
 // 道ばたの物の形
 // ---------------------------------------------------------------------------
-const hash3 = (x: number, y: number, z: number) => {
-  const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453;
-  return s - Math.floor(s);
-};
-
 function paint(g: THREE.BufferGeometry, color: THREE.ColorRepresentation, f?: (y: number) => number) {
   const c = new THREE.Color(color);
   const pos = g.getAttribute("position");
@@ -179,38 +177,6 @@ const bare = (g: THREE.BufferGeometry) => {
   return g.index ? g.toNonIndexed() : g;
 };
 
-/** 丸っこい葉のかたまり。形を少しいびつにする */
-function blob(rx: number, ry: number, rz: number, x: number, y: number, z: number, color: number, seed: number) {
-  const ico = new THREE.IcosahedronGeometry(1, 1);
-  ico.deleteAttribute("uv");
-  ico.deleteAttribute("normal");
-  const g: THREE.BufferGeometry = mergeVertices(ico, 1e-4);
-  const p = g.getAttribute("position");
-  for (let i = 0; i < p.count; i++) {
-    const k = 1 + (hash3(p.getX(i) + seed, p.getY(i), p.getZ(i)) - 0.5) * 0.34;
-    p.setXYZ(i, p.getX(i) * rx * k + x, p.getY(i) * ry * k + y, p.getZ(i) * rz * k + z);
-  }
-  g.computeVertexNormals();
-  return paint(bare(g), color, (yy) => 0.5 + 0.5 * THREE.MathUtils.smoothstep(yy, 3.4, 8.2));
-}
-
-function treeGeometry(): THREE.BufferGeometry {
-  const trunk = new THREE.CylinderGeometry(0.11, 0.2, 3.6, 6);
-  trunk.translate(0, 1.8, 0);
-  const parts = [
-    paint(bare(trunk), 0x6b5440),
-    blob(2.5, 2.1, 2.5, 0, 5.4, 0, 0x3f7a26, 1),
-    blob(1.9, 1.7, 1.9, 1.2, 4.6, 0.7, 0x4b8a2c, 2),
-  ];
-  for (const g of parts) {
-    g.deleteAttribute("uv");
-    if (!g.getAttribute("normal")) g.computeVertexNormals();
-  }
-  const merged = mergeGeometries(parts.map((g) => (g.index ? g.toNonIndexed() : g)))!;
-  merged.computeBoundingSphere();
-  return merged;
-}
-
 /** 生け垣: 長さ 1 の箱（置くときに長さを掛ける）。上の角を少し丸めて見せる */
 function hedgeGeometry(): THREE.BufferGeometry {
   const g = new THREE.BoxGeometry(1, 0.95, 0.75, 1, 2, 1);
@@ -222,50 +188,6 @@ function hedgeGeometry(): THREE.BufferGeometry {
   }
   g.computeVertexNormals();
   return paint(bare(g), 0x44842b, (y) => 0.7 + 0.4 * THREE.MathUtils.smoothstep(y, 0.0, 0.95));
-}
-
-/** 低木: 低ポリの丸い茂み（地面すれすれから 0.9m ほど） */
-function shrubGeometry(): THREE.BufferGeometry {
-  const ico = new THREE.IcosahedronGeometry(1, 0);
-  ico.deleteAttribute("uv");
-  ico.deleteAttribute("normal");
-  const g: THREE.BufferGeometry = mergeVertices(ico, 1e-4);
-  const p = g.getAttribute("position");
-  for (let i = 0; i < p.count; i++) {
-    const k = 1 + (hash3(p.getX(i) * 3.1, p.getY(i) * 2.3, p.getZ(i) * 1.7) - 0.5) * 0.4;
-    p.setXYZ(i, p.getX(i) * 0.62 * k, Math.max(p.getY(i) * 0.5 * k, -0.1) + 0.38, p.getZ(i) * 0.62 * k);
-  }
-  g.computeVertexNormals();
-  return paint(bare(g), 0x3f7a26, (y) => 0.6 + 0.6 * THREE.MathUtils.smoothstep(y, 0.0, 0.9));
-}
-
-/** 草むら: 細い三角の葉を 9 枚、外へ少し倒して束ねる。両面を描き、光は上向きの面として当てる */
-function tuftGeometry(): THREE.BufferGeometry {
-  const pos: number[] = [];
-  const col: number[] = [];
-  const nor: number[] = [];
-  const base = new THREE.Color(0x5e9c33);
-  for (let i = 0; i < 9; i++) {
-    const a = (i / 9) * Math.PI * 2 + hash3(i, 1.3, 0.7);
-    const rad = 0.06 + hash3(i, 5.1, 2.2) * 0.16;
-    const h = 0.32 + hash3(i, 9.7, 4.1) * 0.35;
-    const lean = 0.1 + hash3(i, 3.3, 8.8) * 0.2;
-    const w = 0.045;
-    const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
-    const tx = bx + Math.cos(a) * lean, tz = bz + Math.sin(a) * lean;
-    const px = -Math.sin(a) * w, pz = Math.cos(a) * w;
-    pos.push(bx - px, 0, bz - pz, bx + px, 0, bz + pz, tx, h, tz);
-    for (let k = 0; k < 3; k++) {
-      const f = k === 2 ? 1.25 : 0.65;
-      col.push(base.r * f, base.g * f, base.b * f);
-      nor.push(0, 1, 0);
-    }
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
-  g.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3));
-  return g;
 }
 
 /** 道路標識（丸い規制標識）: 柱・赤い縁・白地・黒い横棒。前面は +z */
@@ -321,7 +243,12 @@ function lampGeometry(): THREE.BufferGeometry {
 // ---------------------------------------------------------------------------
 // 置く側
 // ---------------------------------------------------------------------------
-type CullInfo = { items: Array<{ x: number; z: number }>; alive: Uint8Array; version: number; margin: number };
+type CullInfo = {
+  items: Array<{ x: number; z: number }>; alive: Uint8Array; version: number; margin: number;
+  /** 建物に近すぎたとき、この距離（m）まで動かして置き直す（0 なら動かさず消す） */
+  nudge: number;
+  place: (it: { x: number; z: number }, m: THREE.Matrix4) => void;
+};
 const HIDE = new THREE.Matrix4().makeScale(0, 0, 0).setPosition(0, -500, 0);
 
 /** 場所ごとの箱（250 m 四方）に分けて並べる。見えない箱は描かれない */
@@ -331,7 +258,7 @@ function chunkedInstances<T extends { x: number; z: number }>(
   mat: THREE.Material,
   items: T[],
   place: (it: T, m: THREE.Matrix4) => void,
-  opts: { cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number; receive?: boolean; margin?: number } = {},
+  opts: { nudge?: number; cast?: boolean; color?: (it: T, c: THREE.Color) => void; extra?: (g: THREE.BufferGeometry, list: T[]) => void; cell?: number; receive?: boolean; margin?: number } = {},
 ) {
   const cell = opts.cell ?? 250;
   const bins = new Map<string, T[]>();
@@ -359,7 +286,7 @@ function chunkedInstances<T extends { x: number; z: number }>(
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
     // 建物の足あとと重なった物を後から消すための情報
-    mesh.userData.cull = { items: list, alive: new Uint8Array(list.length).fill(1), version: -1, margin: opts.margin ?? 0.5 } satisfies CullInfo;
+    mesh.userData.cull = { items: list, alive: new Uint8Array(list.length).fill(1), version: -1, margin: opts.margin ?? 0.5, nudge: opts.nudge ?? 0, place: place as (it: { x: number; z: number }, m: THREE.Matrix4) => void } satisfies CullInfo;
     mesh.castShadow = !!opts.cast;
     mesh.receiveShadow = opts.receive ?? true; // 草むらなど小さい物は影を受けなくてよい（影の見え方が変わらず、1 画素あたりの計算が減る）
     parent.add(mesh);
@@ -381,14 +308,15 @@ export class Roads {
   stats: RoadStats = { tiles: 0, failedTiles: 0, lines: 0, nodes: 0, trees: 0, lamps: 0, triangles: 0 };
   private readonly mats = [0, 1, 2, 3, 4].map((l) => roadMaterial(l));
   private readonly walkMat = sidewalkMaterial();
-  private readonly treeGeo = treeGeometry();
+  private readonly treeGeoA = treeCardGeometry(0);
+  private readonly treeGeoB = treeCardGeometry(1);
   private readonly lampGeo = lampGeometry();
   private readonly hedgeGeo = hedgeGeometry();
   private readonly signGeo = signGeometry();
   private readonly vendGeo = vendGeometry();
-  private readonly shrubGeo = shrubGeometry();
-  private readonly tuftGeo = tuftGeometry();
-  private readonly tuftMat: THREE.MeshStandardNodeMaterial;
+  private readonly shrubGeo = bushCardGeometry();
+  private readonly tuftGeo = tuftCardGeometry();
+  private readonly cardMat = cardMaterial();
   private readonly treeMat: THREE.MeshStandardNodeMaterial;
   private readonly metalMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.3, vertexColors: true });
   private token = 0;
@@ -412,8 +340,6 @@ export class Roads {
     const leafTint: N = mix(vec3(1.18, 1.0, 0.7), vec3(0.85, 1.05, 0.9), tint);
     tm.colorNode = mix(vec3(1, 1, 1), leafTint.mul(leaf), crown);
     this.treeMat = tm;
-    this.tuftMat = tm.clone();
-    this.tuftMat.side = THREE.DoubleSide;
   }
 
   private get treeDraw() {
@@ -451,10 +377,16 @@ export class Roads {
         if (!c.alive[i]) continue;
         const it = c.items[i];
         if (fp.near(it.x, it.z, c.margin)) {
-          c.alive[i] = 0;
-          mesh.setMatrixAt(i, HIDE);
           changed = true;
-          this.culled++;
+          if (c.nudge > 0 && this.nudge(fp, it, c)) {
+            c.place(it, this.tmpM);
+            mesh.setMatrixAt(i, this.tmpM);
+            this.moved++;
+          } else {
+            c.alive[i] = 0;
+            mesh.setMatrixAt(i, HIDE);
+            this.culled++;
+          }
         }
       }
       if (changed) mesh.instanceMatrix.needsUpdate = true;
@@ -462,18 +394,32 @@ export class Roads {
       if (performance.now() - t0 > budgetMs) { this.cullCursor = (this.cullCursor + step + 1) % N; return; }
     }
   }
-  /** 建物と重なって消した物の数（確認用） */
+  private readonly tmpM = new THREE.Matrix4();
+  /** 建物に近すぎる物を、近い順に 16 方向へ動かして、空いている所に置き直す。置けたら true */
+  private nudge(fp: Footprints, it: { x: number; z: number }, c: CullInfo): boolean {
+    for (let r = 0.6; r <= c.nudge + 1e-6; r += 0.6) {
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2;
+        const x = it.x + Math.cos(a) * r, z = it.z + Math.sin(a) * r;
+        if (!fp.near(x, z, c.margin)) { it.x = x; it.z = z; return true; }
+      }
+    }
+    return false;
+  }
+  /** 建物と重なって消した物の数・ずらして置き直した物の数（確認用） */
   culled = 0;
+  moved = 0;
 
   clear() {
     this.token++;
     this.culled = 0;
+    this.moved = 0;
     this.lods = [];
     for (const c of [...this.group.children]) {
       this.group.remove(c);
       c.traverse((o) => {
         const mesh = o as THREE.Mesh;
-        if (mesh.isMesh && mesh.geometry !== this.treeGeo && mesh.geometry !== this.lampGeo && mesh.geometry !== this.hedgeGeo && mesh.geometry !== this.signGeo && mesh.geometry !== this.vendGeo) mesh.geometry.dispose();
+        if (mesh.isMesh && mesh.geometry !== this.treeGeoA && mesh.geometry !== this.treeGeoB && mesh.geometry !== this.shrubGeo && mesh.geometry !== this.tuftGeo && mesh.geometry !== this.lampGeo && mesh.geometry !== this.hedgeGeo && mesh.geometry !== this.signGeo && mesh.geometry !== this.vendGeo) mesh.geometry.dispose();
       });
     }
   }
@@ -576,15 +522,21 @@ export class Roads {
     // --- 道ばたの物 ---
     const f: Furniture = placeFurniture(near, nodes, { treeRadius: this.treeRadius });
     this.lods = [];
-    this.lods.push({ draw: this.treeDraw, shadow: 220, meshes: chunkedInstances(this.group, this.treeGeo, this.treeMat, f.trees, (t, m) => {
-      m.compose(new THREE.Vector3(t.x, 0, t.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), t.rot), new THREE.Vector3(t.scale, t.scale * (0.9 + t.tint * 0.25), t.scale));
-    }, {
-      cast: true,
-      margin: 1.6, // 木の枝ぶんの余白
-      extra: (g, list) => {
-        g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1));
-      },
-    }) });
+    const Yax = new THREE.Vector3(0, 1, 0);
+    const placeTree = (t: TreeInst, m: THREE.Matrix4) => {
+      m.compose(new THREE.Vector3(t.x, 0, t.z), new THREE.Quaternion().setFromAxisAngle(Yax, t.rot), new THREE.Vector3(t.scale, t.scale * (0.9 + t.tint * 0.25), t.scale));
+    };
+    const tintAttr = (g: THREE.BufferGeometry, list: { tint: number }[]) => {
+      g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1));
+    };
+    // 街路樹は葉の形が違う 2 種類。建物に近すぎる木は、少しずらして置き直す（置けなければ消す）
+    const treeMeshes: THREE.InstancedMesh[] = [];
+    for (const [geo, pick] of [[this.treeGeoA, (t: TreeInst) => t.tint < 0.5], [this.treeGeoB, (t: TreeInst) => t.tint >= 0.5]] as const) {
+      treeMeshes.push(...chunkedInstances(this.group, geo, this.cardMat, f.trees.filter(pick), placeTree, {
+        cast: true, margin: 1.3, nudge: 2.4, receive: false, extra: tintAttr,
+      }));
+    }
+    this.lods.push({ draw: this.treeDraw, shadow: 220, meshes: treeMeshes });
     this.lods.push({ draw: 350, shadow: 0, meshes: chunkedInstances(this.group, this.lampGeo, this.metalMat, f.lamps, (l, m) => {
       m.compose(new THREE.Vector3(l.x, 0, l.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), l.rot), new THREE.Vector3(1, 1, 1));
     }, { margin: 0.2 }) });
@@ -599,22 +551,12 @@ export class Roads {
       cell: 200,
       margin: 0.6,
     }) });
-    this.lods.push({ draw: 240, shadow: 0, meshes: chunkedInstances(this.group, this.shrubGeo, this.treeMat, f.shrubs, (h, m) => {
+    this.lods.push({ draw: 240, shadow: 0, meshes: chunkedInstances(this.group, this.shrubGeo, this.cardMat, f.shrubs, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale * (0.8 + h.tint * 0.4), h.scale));
-    }, {
-      extra: (g, list) => { g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1)); },
-      cell: 200,
-      receive: false,
-      margin: 0.9,
-    }) });
-    this.lods.push({ draw: 160, shadow: 0, meshes: chunkedInstances(this.group, this.tuftGeo, this.tuftMat, f.tufts, (h, m) => {
+    }, { extra: tintAttr, cell: 200, receive: false, margin: 0.8, nudge: 1.4 }) });
+    this.lods.push({ draw: 170, shadow: 0, meshes: chunkedInstances(this.group, this.tuftGeo, this.cardMat, f.tufts, (h, m) => {
       m.compose(new THREE.Vector3(h.x, 0, h.z), new THREE.Quaternion().setFromAxisAngle(Y, h.rot), new THREE.Vector3(h.scale, h.scale, h.scale));
-    }, {
-      extra: (g, list) => { g.setAttribute("tint", new THREE.InstancedBufferAttribute(Float32Array.from(list, (t) => t.tint), 1)); },
-      cell: 160,
-      receive: false,
-      margin: 0.3,
-    }) });
+    }, { extra: tintAttr, cell: 160, receive: false, margin: 0.3, nudge: 1.0 }) });
     this.lods.push({ draw: 260, shadow: 0, meshes: chunkedInstances(this.group, this.signGeo, this.metalMat, f.signs, (p, m) => {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
     }, { cell: 200, margin: 0.2 }) });
@@ -622,7 +564,7 @@ export class Roads {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
     }, { cell: 200, margin: 0 }) });
     const triOf = (g: THREE.BufferGeometry, k: number) => (g.index ? g.index.count : g.getAttribute("position").count) / 3 * k;
-    tris += triOf(this.treeGeo, f.trees.length) + triOf(this.lampGeo, f.lamps.length)
+    tris += triOf(this.treeGeoA, f.trees.length) + triOf(this.lampGeo, f.lamps.length)
       + triOf(this.shrubGeo, f.shrubs.length) + triOf(this.tuftGeo, f.tufts.length) + triOf(this.hedgeGeo, f.hedges.length) + triOf(this.signGeo, f.signs.length) + triOf(this.vendGeo, f.vends.length);
     this.stats = { ...this.stats, trees: f.trees.length, lamps: f.lamps.length, triangles: tris };
     this.log(
