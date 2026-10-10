@@ -2,7 +2,7 @@
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
 /** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
-const BUILD_ID = "21";
+const BUILD_ID = "22";
 import { StallMeter } from "./core/stalls";
 import { Warmup } from "./render/warmup";
 import * as THREE from "three/webgpu";
@@ -13,6 +13,7 @@ import { Roads } from "./world/roads";
 import { Driver } from "./world/drive";
 import { SEATS, createInterior, type SeatId } from "./world/carInterior";
 import { loadTextures } from "./render/assets";
+import { PhotoGround } from "./world/photoGround";
 import { findBuildingTilesets } from "./world/plateau";
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
@@ -88,18 +89,20 @@ async function main() {
   // 地面は 8m 角ほどに区切った板にする（巨大な 1 枚の板だと奥行きの計算がずれて、道路が地面の下に隠れてしまう。以前の 2.5m 角は三角形が多すぎたので粗くした）
   // 地面は道路より 12cm 沈めておく（同じ高さだと奥行きの比べ方が画面の大きさで変わり、近くの道路が地面に隠れることがあった）
   const GROUND_Y = -0.12;
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400, 50, 50), look.groundMaterial);
+  // 地面の航空写真（国土地理院シームレス写真）。全部そろった範囲から写真に切り替わる。読めなければ簡易な地面のまま
+  const photos = new PhotoGround(frame, log, { enabled: new URLSearchParams(location.search).get("photo") !== "0", isMobile });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400, 50, 50), photos.materials.near);
   ground.receiveShadow = true;
   ground.position.y = GROUND_Y;
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
   // 遠くは粗い輪っか状の板で埋める（真ん中は空けておく。近くに巨大な板があると、奥行きの計算がずれて道路が隠れる）（霞で見えにくい所。少し低くして重ならないようにする）
   // 中くらいの距離（半径 190m〜2100m）の地面。さらに少し低くして、近くの地面と重なっても負けるようにする
-  const midGround = new THREE.Mesh(new THREE.RingGeometry(190, 2100, 128, 8), look.groundMaterial);
+  const midGround = new THREE.Mesh(new THREE.RingGeometry(190, 2100, 128, 8), photos.materials.mid);
   midGround.rotation.x = -Math.PI / 2;
   midGround.position.y = GROUND_Y - 0.2;
   scene.add(midGround);
-  const farGround = new THREE.Mesh(new THREE.RingGeometry(2000, 12000, 96, 1), look.groundMaterial);
+  const farGround = new THREE.Mesh(new THREE.RingGeometry(2000, 12000, 96, 1), photos.materials.far);
   farGround.rotation.x = -Math.PI / 2;
   farGround.position.y = -0.6;
   scene.add(farGround);
@@ -137,6 +140,7 @@ async function main() {
     $("gh").textContent = `${groundH}`;
     buildings.clear();
     buildings.setFrame(frame);
+    photos.setFrame(frame);
     roads.clear();
     // 場所を変えたら、運転のための道データも古くなるので作り直す
     driver = null;
@@ -315,6 +319,7 @@ async function main() {
       // 地面の平面を動かす代わりに、原点の高さを動かして建物との相対位置を変える
       frame = new LocalFrame({ lat: place.lat, lon: place.lon, h: groundH });
       buildings.setFrame(frame);
+      photos.setFrame(frame);
       $("gh").textContent = `${groundH}`;
       log(`地面の高さ: ${groundH} m`);
     };
@@ -528,6 +533,8 @@ async function main() {
     midGround.position.z = camera.position.z;
     farGround.position.x = camera.position.x;
     farGround.position.z = camera.position.z;
+    // 地面の写真: カメラが動いたら、その周りの写真を裏で読み直す（判定だけ。重い処理は裏で分散）
+    photos.update(camera.position);
 
     const tr0 = performance.now();
     if (roadsOn) {

@@ -4,7 +4,7 @@
 
 参考: [kexi/tokyo-od-game](https://github.com/kexi/tokyo-od-game)（東京 23 区を PLATEAU 3D 都市モデルで走る three.js ゲーム）
 
-> 現在は **仕様策定フェーズ + 性能チェックページ**（街はまだ出ません）。
+> 現在は **名古屋の街を自動運転で走る試作** を公開中（版 22。地面に国土地理院の航空写真を使用）。正確な現状は [docs/07-building-check-page.md](docs/07-building-check-page.md) の末尾（変更履歴）を参照。
 
 ## ドキュメント
 

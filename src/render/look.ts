@@ -1,10 +1,7 @@
 // 画面全体の「絵作り」: 空・太陽の光と影・空の映り込み・暗がり・光のにじみ・遠くのかすみ。
 // 画質は 低 / 中 から選べる（重いときは下げる）。
-import { TEX } from "./assets";
 import * as THREE from "three/webgpu";
 import { SkyMesh } from "three/addons/objects/SkyMesh.js";
-import { float, length, mix, positionView, positionWorld, smoothstep, vec2, vec3 } from "three/tsl";
-import { vnoise, type N } from "./noise";
 import { makeClouds } from "./clouds";
 
 export type Quality = "low" | "mid";
@@ -22,7 +19,6 @@ export type Look = {
   freezeShadow(b: boolean): void;
   /** 影の絵を描き直した回数（確認用） */
   shadowRedraws(): number;
-  groundMaterial: THREE.MeshStandardNodeMaterial;
   /** 太陽の向き（単位ベクトル。街の外の場面の光をそろえる用） */
   sunDir: THREE.Vector3;
 };
@@ -105,19 +101,7 @@ export function setupLook(
   // 影の縁のぼかしは、軽い方式（PCF）にする。PCFSoft は 1 画素あたりの参照回数が多く、影を受ける全部の面で重くなる
   renderer.shadowMap.type = qs.get("softshadow") === "1" ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
 
-  // --- 地面（コンクリートと砂利。道路を作るまでの仮） ---
-  const groundMaterial = new THREE.MeshStandardNodeMaterial({ roughness: 0.93, metalness: 0 });
-  {
-    const p: N = vec2(positionWorld.x, positionWorld.z);
-    // 地面の芝は、いったんやめた（草を消す指示）。道路の外の地面は、明るめのコンクリートと砂利だけ。
-    // 道路そのものは roads.ts の専用の面で描くので、ここは「道路以外」の色。
-    const n2: N = vnoise(p.mul(0.35));
-    const lot: N = mix(vec3(0.42, 0.41, 0.39), vec3(0.54, 0.52, 0.48), n2)
-      .mul(float(0.92).add(n2.mul(0.16)));
-    // 影の濃淡: 地面の「影の中の明るさ」に、大きなむら（広場ごと・街区ごとの違い）をつける
-    groundMaterial.aoNode = mix(float(0.55), float(1.0), smoothstep(0.15, 0.85, vnoise(p.mul(0.021).add(vec2(37.0, 11.0)))));
-    groundMaterial.colorNode = lot.mul(TEX.concrete.detail(p)).mul(n2.mul(0.14).add(0.93));
-  }
+  // --- 地面の材質は render/groundMaterials.ts（写真の貼り替えは world/photoGround.ts） ---
 
   // --- 画質ごとの組み立て（低: 影なし / 中: 影＋空の映り込み）。後処理は使わない（画面の縁は MSAA でなめらかにする） ---
   let quality: Quality = "mid";
@@ -199,7 +183,6 @@ export function setupLook(
     setOptions,
     freezeShadow: (b: boolean) => { shadowFrozen = b; },
     shadowRedraws: () => shadowRedraws,
-    groundMaterial,
     sunDir,
   } as Look;
 }

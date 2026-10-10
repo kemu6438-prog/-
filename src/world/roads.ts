@@ -282,8 +282,9 @@ function chunkedInstances<T extends { x: number; z: number }>(
     let g = geom;
     if (opts.extra) { g = geom.clone(); opts.extra(g, list); } else geom.userData.shared = true;
     // 同じ形を並べる物（インスタンス）は、個数が違うと別のシェーダーになる（行列の入れ物の大きさが個数で決まるため）。
-    // 個数を段階（32 / 128 / 512 / 1024）に切り上げて入れ物を作り、描く個数だけ count で指定する。段階が同じなら、シェーダーは共通
-    const cap = list.length <= 32 ? 32 : list.length <= 128 ? 128 : list.length <= 512 ? 512 : list.length <= 1024 ? 1024 : list.length;
+    // 個数を段階（64 / 1024）に切り上げて入れ物を作り、描く個数だけ count で指定する。段階が同じなら、シェーダーは共通。
+    // 段階は 2 つだけ（以前は 32/128/512/1024 の 4 つ）。実機で「止まり」の原因になっていたシェーダーの種類を減らすため
+    const cap = list.length <= 64 ? 64 : list.length <= 1024 ? 1024 : list.length;
     const mesh = new THREE.InstancedMesh(g, mat, cap);
     mesh.count = list.length;
     for (let i = 0; i < list.length; i++) {
