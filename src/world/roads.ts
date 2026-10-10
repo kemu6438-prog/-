@@ -14,6 +14,7 @@ import {
 import { buildRibbon, roadExtra, sidewalkExtra, type Ribbon } from "./roadGeometry";
 import { placeFurniture, type Furniture, type TreeInst } from "./roadFurniture";
 import type { Footprints } from "./footprints";
+import type { Warmup } from "../render/warmup";
 import { bushCardGeometry, cardMaterial, treeCardGeometry } from "../render/plants";
 
 // ---------------------------------------------------------------------------
@@ -280,7 +281,11 @@ function chunkedInstances<T extends { x: number; z: number }>(
     // 個別の属性（葉の色むら）がなければ、形は全部の塊で共有する（GPU の buffer を塊ごとに作ると、読み込みの瞬間に引っかかる）
     let g = geom;
     if (opts.extra) { g = geom.clone(); opts.extra(g, list); } else geom.userData.shared = true;
-    const mesh = new THREE.InstancedMesh(g, mat, list.length);
+    // 同じ形を並べる物（インスタンス）は、個数が違うと別のシェーダーになる（行列の入れ物の大きさが個数で決まるため）。
+    // 個数を段階（32 / 128 / 512 / 1024）に切り上げて入れ物を作り、描く個数だけ count で指定する。段階が同じなら、シェーダーは共通
+    const cap = list.length <= 32 ? 32 : list.length <= 128 ? 128 : list.length <= 512 ? 512 : list.length <= 1024 ? 1024 : list.length;
+    const mesh = new THREE.InstancedMesh(g, mat, cap);
+    mesh.count = list.length;
     for (let i = 0; i < list.length; i++) {
       place(list[i], m);
       mesh.setMatrixAt(i, m);
@@ -345,6 +350,9 @@ export class Roads {
   private readonly vendGeo = vendGeometry();
   private readonly shrubGeo = bushCardGeometry();
   private readonly cardMat = cardMaterial();
+  /** 初めての描き方の準備（画面を止めない）。準備ができるまで、その塊は見せない */
+  private warm: Warmup | null = null;
+  setWarmup(w: Warmup) { this.warm = w; }
   private readonly treeMat: THREE.MeshStandardNodeMaterial;
   private readonly metalMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.3, vertexColors: true });
   private token = 0;
@@ -434,12 +442,18 @@ export class Roads {
     this.refreshFlat();
     // 出す/隠すの判定は 3 コマに 1 回で足りる（8 m/s で動いても 1 コマ 0.15 m）
     if (this.lodTick++ % 3 !== 0 && !this.flatDirty) return;
+    // 影を落とし始める塊は、1 回の見直しで 1 つまで（初めて影を落とすとき、その塊の影用の準備が走って、1 コマ重くなるため）
+    let flips = 0;
     for (const { mesh: m, lod: l } of this.flat) {
       const b = m.boundingSphere;
       if (!b) continue;
       const d = Math.hypot(b.center.x - cam.x, b.center.z - cam.z) - b.radius;
       m.visible = m.userData.live === true && !this.hideInstanced && d < l.draw;
-      if (l.shadow > 0) m.castShadow = d < l.shadow;
+      if (l.shadow > 0) {
+        const want = d < l.shadow;
+        if (want && !m.castShadow) { if (flips < 1 && m.visible) { m.castShadow = true; flips++; } }
+        else m.castShadow = want;
+      }
     }
   }
 
@@ -626,10 +640,16 @@ export class Roads {
   /** 1 コマに 1 つだけ、重い作業をする: ① 届いたタイルを道の面にする ② 近いタイルに木などを置く ③ 遠くの木などを捨てる */
   private buildOne(cam: THREE.Vector3) {
     // 表示待ちの物が溜まっているうちは、新しく作らない（作る速さを、表示する速さに合わせる）
-    for (let i = 0; i < 6 && this.revealQ.length > 0; i++) {
-      const o = this.revealQ.shift()!;
+    const w = this.warm;
+    for (let i = 0, shown = 0; i < this.revealQ.length && shown < 6;) {
+      const o = this.revealQ[i];
+      const m = o as THREE.Mesh;
+      // 初めて描く組み合わせは、裏で準備ができるまで待つ（待たずに描くと、その瞬間に画面が止まる）
+      if (w && w.enabled && !w.ready(m, m.material as THREE.Material)) { void w.request(m, m.material as THREE.Material); i++; continue; }
+      this.revealQ.splice(i, 1);
       o.userData.live = true;
       if (o.userData.ribbon) o.visible = true;
+      shown++;
     }
     if (this.revealQ.length > 12) return;
     if (this.readyQ.length > 0) {

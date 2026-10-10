@@ -32,6 +32,8 @@ export class StallMeter {
   private winStart = performance.now();
   private logged = 0;
   supported = false;
+  /** 走行中だけ、長い処理を 1 件ずつ記録する（起動直後の読み込みでログが埋まらないように） */
+  active = false;
 
   constructor(private readonly log: (m: string) => void) {
     try {
@@ -45,7 +47,7 @@ export class StallMeter {
         new PerformanceObserver((list) => {
           for (const e of list.getEntries()) {
             const scripts = ((e as unknown as { scripts?: Script[] }).scripts ?? []).slice().sort((a, b) => b.duration - a.duration);
-            if (scripts.length && e.duration >= 70 && this.logged < 30) {
+            if (this.active && scripts.length && e.duration >= 70 && this.logged < 30) {
               const top = scripts.slice(0, 2).map((x) => `${x.invokerType ?? "?"}:${x.sourceFunctionName || x.invoker || "?"}@${(x.sourceURL ?? "").split("/").pop()} ${x.duration.toFixed(0)}ms`).join(" / ");
               this.logged++;
               this.log(`  └ 長いコマの中身（ブラウザの記録）: ${top}`);
@@ -70,7 +72,7 @@ export class StallMeter {
   private onLong(s: number, d: number, _x: null) {
     const inside = overlapRatio(this.spans, s, s + d) > 0.6;
     if (inside) this.insideN++; else { this.outsideN++; this.outsideMs += d; }
-    if (this.logged < 30 && !document.hidden) {
+    if (this.active && this.logged < 30 && !document.hidden) {
       this.logged++;
       this.log(`長い処理 ${d.toFixed(0)} ms: ${inside ? "描画コマの中（更新・描画命令）" : "描画コマの外（データの解析・読み込みなど）"}`);
     }

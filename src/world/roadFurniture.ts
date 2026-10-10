@@ -127,13 +127,7 @@ export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { ot
           if (!ok(o.x, o.z)) continue;
           hedges.push({ x: o.x, z: o.z, rot: Math.atan2(-q.dz, q.dx), scale: 2.5 + rp() * 4, tint: rp() });
         }
-        // 低木（丸い茂み）
-        for (const q of walk(line, rp() * 6, 5.5, () => (rp() - 0.5) * 4)) {
-          if (!edgeFree(q.s, 9) || rp() > 0.5) continue;
-          const o = at(q, hr + sw * (0.55 + rp() * 0.4));
-          if (!ok(o.x, o.z)) continue;
-          shrubs.push({ x: o.x, z: o.z, rot: rp() * 6.283, scale: 0.7 + rp() * 0.8, tint: rp() });
-        }
+        // 低木（丸い茂み・草のように見える葉の板）は、やめた（shrubs は常に空）。生け垣（四角い塊）は残す
         // 草むら（地面に生える草の板）は、いったんやめた（tufts は常に空）
         // 自動販売機（歩道の建物側。道のほうを向く）
         for (const q of walk(line, rp() * 24, 24, () => (rp() - 0.5) * 12)) {

@@ -7,6 +7,7 @@ import * as THREE from "three/webgpu";
 import type { LocalFrame } from "../core/geo";
 import { depthPrepassMaterial, ensureFloatAttribute, facadeMaterial, farFacadeMaterial, findIdAttribute, plainMaterial } from "./facade";
 import { addSkirt } from "./skirt";
+import type { Warmup } from "../render/warmup";
 import { Footprints } from "./footprints";
 import { WALL_ATTR, addWallTangents, ensureWallAttribute } from "./walls";
 
@@ -36,6 +37,9 @@ export class Buildings {
   /** 建物タイルの受け取り処理にかかった時間（ms）の、前回取り出してからの合計 */
   private loadMs = 0;
   takeLoadMs(): number { const v = this.loadMs; this.loadMs = 0; return v; }
+  /** 初めての描き方の準備を裏でやる（画面を止めない）。準備ができるまで、その建物は見せない */
+  private warm: Warmup | null = null;
+  setWarmup(w: Warmup) { this.warm = w; }
   private skirtOk = 0;
   private skirtNo = 0;
   radius = 2000;
@@ -151,6 +155,27 @@ export class Buildings {
           mesh.userData.hasPrepass = true;
         }
       });
+      // 初めて描く組み合わせ（材質 × 形の持ち物）は、準備ができるまで見せない。準備は裏で、1 つずつ
+      const w = this.warm;
+      if (w && w.enabled && this.lod === 1 && this.facadeOn) {
+        scene.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (!mesh.isMesh || mesh.userData.isPrepass) return;
+          const mat = mesh.material as THREE.Material;
+          const pre = mesh.children.find((c) => c.userData.isPrepass) as THREE.Mesh | undefined;
+          const need: Promise<void>[] = [];
+          if (!w.ready(mesh, mat)) need.push(w.request(mesh, mat));
+          if (pre && !w.ready(pre, pre.material as THREE.Material)) need.push(w.request(pre, pre.material as THREE.Material));
+          if (need.length > 0) {
+            mesh.visible = false;
+            void Promise.all(need).then(() => { mesh.visible = true; });
+          }
+          // 反対側（近い ⇄ 遠い）の材質も、裏で準備しておく（切り替えの瞬間に止まらないように）
+          const id = (mesh.userData.idName ?? null) as string | null;
+          const other = mesh.userData.far === true ? facadeMaterial(id) : farFacadeMaterial(id);
+          if (!w.ready(mesh, other)) void w.request(mesh, other);
+        });
+      }
       this.triOf.set(scene, tri);
       this.triangles += tri;
       // 1 回の処理が長いと、その 1 コマだけ引っかかる。長かったものは記録する（確認用）
@@ -241,6 +266,15 @@ export class Buildings {
       this.tmpC.copy(bs.center).applyMatrix4(mesh.matrixWorld);
       const d = this.tmpC.distanceTo(cam) - bs.radius;
       const far = mesh.userData.far === true;
+      const w = this.warm;
+      // 切り替え先の準備ができていなければ、頼んでおいて今回は見送る（次の見直しで切り替える）
+      if (w && w.enabled) {
+        const id = (mesh.userData.idName ?? null) as string | null;
+        if ((!far && d > this.farOn) || (far && d < this.farOff)) {
+          const next = far ? facadeMaterial(id) : farFacadeMaterial(id);
+          if (!w.ready(mesh, next)) { void w.request(mesh, next); continue; }
+        }
+      }
       if (!far && d > this.farOn) {
         mesh.userData.far = true;
         mesh.material = farFacadeMaterial(mesh.userData.idName ?? null);

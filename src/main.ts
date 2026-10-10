@@ -2,8 +2,9 @@
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
 /** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
-const BUILD_ID = "20";
+const BUILD_ID = "21";
 import { StallMeter } from "./core/stalls";
+import { Warmup } from "./render/warmup";
 import * as THREE from "three/webgpu";
 import { setupLook } from "./render/look";
 import { LocalFrame } from "./core/geo";
@@ -112,6 +113,10 @@ async function main() {
 
   // 道路・歩道・街路樹など（?roads=0 で出さない）
   const roads = new Roads(log);
+  // 初めて描く組み合わせの準備を裏でやる（実機の 1〜4 秒の止まりへの対策）。?warm=0 で無効
+  const warm = new Warmup(renderer, scene, camera, log);
+  buildings.setWarmup(warm);
+  roads.setWarmup(warm);
   roads.radius = isMobile ? 800 : 1100; // 道の面は 1 km より遠いと、ほとんど建物の陰で見えない。重さの割に見返りが少ない
   roads.treeRadius = isMobile ? 450 : 700;
   scene.add(roads.group);
@@ -440,6 +445,7 @@ async function main() {
   const UP = new THREE.Vector3(0, 1, 0);
   // 引っかかりの犯人探し（見るだけ）。走っている間、10 秒ごとに「時間がどこで失われたか」を記録する
   const stalls = new StallMeter(log);
+  log(`長い処理の記録: ${stalls.supported ? "このブラウザは対応" : "このブラウザは未対応（「描画の外の長い処理 0」は測れていないという意味）"} / 描画の事前準備: ${warm.enabled ? "あり" : "なし"}`);
   let lastLoaded = 0, lastRoadTiles = 0, lastSumMode = "";
   renderer.setAnimationLoop(() => {
     const now = performance.now();
@@ -555,6 +561,7 @@ async function main() {
     hitchRen = t3 - t2; hitchUpd = t2 - t1; hitchRoad = tr1 - tr0; hitchTile = tileMs; hitchShadow = redraws !== lastRedraws; lastRedraws = redraws;
 
     stalls.frame(now, t3, gap);
+    stalls.active = mode === "drive";
     if (mode !== lastSumMode) { lastSumMode = mode; stalls.reset(); }
     if (mode === "drive") {
       const sm = stalls.summary("");
@@ -562,7 +569,7 @@ async function main() {
         const bs = buildings.stats();
         const dl = bs.loadedTiles - lastLoaded, dr = roads.stats.tiles - lastRoadTiles;
         lastLoaded = bs.loadedTiles; lastRoadTiles = roads.stats.tiles;
-        log(`${sm} ｜ 建物タイル 読み込み済 ${bs.loadedTiles}（変化 ${dl >= 0 ? "+" : ""}${dl}）/ 処理中 ${bs.parsing} / 待ち ${bs.queued} ｜ 道タイル ${roads.stats.tiles}（変化 ${dr >= 0 ? "+" : ""}${dr}）`);
+        log(`${sm} ｜ 事前準備 済み ${warm.completed} 種 / 待ち ${warm.waiting} / 最長 ${warm.maxMs.toFixed(0)} ms ｜ 建物タイル 読み込み済 ${bs.loadedTiles}（変化 ${dl >= 0 ? "+" : ""}${dl}）/ 処理中 ${bs.parsing} / 待ち ${bs.queued} ｜ 道タイル ${roads.stats.tiles}（変化 ${dr >= 0 ? "+" : ""}${dr}）`);
       }
     }
 
