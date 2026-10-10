@@ -2,7 +2,7 @@
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
 /** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
-const BUILD_ID = "22";
+const BUILD_ID = "23";
 import { StallMeter } from "./core/stalls";
 import { Warmup } from "./render/warmup";
 import * as THREE from "three/webgpu";
@@ -75,6 +75,9 @@ async function main() {
     let jsErrs = 0;
     window.addEventListener("error", (e) => { if (++jsErrs <= 5) log(`【エラー】${e.message}`); });
     window.addEventListener("unhandledrejection", (e) => { if (++jsErrs <= 5) log(`【エラー】${String((e.reason as Error)?.message ?? e.reason).slice(0, 200)}`); });
+    // 版 23: WebGL 互換モードで GPU との接続が切れた・戻ったを記録する（切れている間は画面が数秒止まる。実機の大きな止まりの有力な原因候補）
+    renderer.domElement.addEventListener("webglcontextlost", (e) => { e.preventDefault(); log("【GPU 切断】画面の描き方が一度失われました（回復を試みます。回復中は画面が止まります）"); });
+    renderer.domElement.addEventListener("webglcontextrestored", () => log("【GPU 復帰】画面の描き方が戻りました"));
   }
 
   const scene = new THREE.Scene();
@@ -444,7 +447,7 @@ async function main() {
 
   // --- 毎コマの処理 ---
   let frames = 0, acc = 0, worst = 0, last = performance.now(), lastStats = 0;
-  let hitchLogged = 0, lastRedraws = 0, hitchRen = 0, hitchUpd = 0, hitchRoad = 0, hitchTile = 0, hitchShadow = false;
+  let hitchLogged = 0, bigGapLogged = 0, lastRedraws = 0, hitchRen = 0, hitchUpd = 0, hitchRoad = 0, hitchTile = 0, hitchShadow = false;
   let jsUpd = 0, jsRen = 0, lowSec = 0, okSec = 0, worstUpd = 0, worstRen = 0;
   const tmp = new THREE.Vector3();
   const UP = new THREE.Vector3(0, 1, 0);
@@ -565,6 +568,12 @@ async function main() {
       hitchLogged++;
       log(`引っかかり ${gap.toFixed(0)} ms（前のコマの内訳: 描画命令 ${hitchRen.toFixed(0)} / 更新 ${hitchUpd.toFixed(0)} / 道 ${hitchRoad.toFixed(0)} / 建物タイル処理 ${hitchTile.toFixed(0)} / 影の描き直し ${hitchShadow ? "あり" : "なし"}）`);
     }
+    // 版 23: 数秒級の「大きな止まり」を必ずログに残す（版 21・22 と同じ 17 秒級の止まりが出たら、それと分かるようにする。
+    // 発生している間は時計共通のため、終わった直後のコマで「前のコマから ○○ ms あいた」と記録する）
+    if (gap > 3000 && bigGapLogged < 5 && !document.hidden) {
+      bigGapLogged++;
+      log(`【大きな止まり】前のコマから ${gap.toFixed(0)} ms もあきました。画面のブラウザを切り替えていないのに起きたなら、GPU 側の大きな休止の可能性が高いです（GPU 切断のログも一緒に出ていればそれが原因）`);
+    }
     hitchRen = t3 - t2; hitchUpd = t2 - t1; hitchRoad = tr1 - tr0; hitchTile = tileMs; hitchShadow = redraws !== lastRedraws; lastRedraws = redraws;
 
     stalls.frame(now, t3, gap);
@@ -576,7 +585,14 @@ async function main() {
         const bs = buildings.stats();
         const dl = bs.loadedTiles - lastLoaded, dr = roads.stats.tiles - lastRoadTiles;
         lastLoaded = bs.loadedTiles; lastRoadTiles = roads.stats.tiles;
-        log(`${sm} ｜ 事前準備 済み ${warm.completed} 種 / 待ち ${warm.waiting} / 最長 ${warm.maxMs.toFixed(0)} ms ｜ 建物タイル 読み込み済 ${bs.loadedTiles}（変化 ${dl >= 0 ? "+" : ""}${dl}）/ 処理中 ${bs.parsing} / 待ち ${bs.queued} ｜ 道タイル ${roads.stats.tiles}（変化 ${dr >= 0 ? "+" : ""}${dr}）`);
+        // 版 23: GPU の資源の数（図形の種類・質感の数・プログラムの数）と、ページが使う本体メモリを併記する。
+        // FPS がじわじわ落ちていく場合に「何かが増え続けているのか」を確かめるための表示。
+        const info = renderer.info as unknown as { memory?: { geometries?: number; textures?: number }; programs?: unknown[] };
+        const gm = info.memory?.geometries ?? 0, tm = info.memory?.textures ?? 0;
+        const pg = Array.isArray(info.programs) ? info.programs.length : (info as { programs?: { size?: number } }).programs?.size ?? -1;
+        const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+        const heapTxt = heap ? `${Math.round(heap.usedJSHeapSize / 1048576)} MB` : "測れず";
+        log(`${sm} ｜ 事前準備 済み ${warm.completed} 種 / 待ち ${warm.waiting} / 最長 ${warm.maxMs.toFixed(0)} ms ｜ 建物タイル 読み込み済 ${bs.loadedTiles}（変化 ${dl >= 0 ? "+" : ""}${dl}）/ 処理中 ${bs.parsing} / 待ち ${bs.queued} ｜ 道タイル ${roads.stats.tiles}（変化 ${dr >= 0 ? "+" : ""}${dr}） ｜ 図形/質感/プログラム ${gm}/${tm}/${pg} ｜ 本体メモリ ${heapTxt}`);
       }
     }
 

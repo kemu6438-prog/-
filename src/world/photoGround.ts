@@ -44,7 +44,7 @@ class PhotoRegion {
   private readonly sx = uniform(1);
   private readonly sz = uniform(1);
   private readonly photoNode: { value: unknown };
-  private tex: THREE.DataTexture | null = null;
+  private tex: THREE.Texture | null = null;
   private anchor: { x: number; z: number } | null = null;
   private task: TileTask | null = null;
   private disabled = false;
@@ -97,7 +97,8 @@ class PhotoRegion {
     const rect = { x0: Math.min(nw.x, se.x), z0: Math.min(nw.z, se.z), x1: Math.max(nw.x, se.x), z1: Math.max(nw.z, se.z) };
     this.canvas.width = (r.x1 - r.x0 + 1) * TILE_PX;
     this.canvas.height = (r.y1 - r.y0 + 1) * TILE_PX;
-    const ctx = this.canvas.getContext("2d", { willReadFrequently: true });
+    // 版 23: ピクセルのコピーを止めたので、もう読み取りしない（この指定があると絵がメモリ側に置かれて遅くなりうる）
+    const ctx = this.canvas.getContext("2d");
     if (!ctx) { this.disabled = true; return; }
     ctx.fillStyle = FILL;
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -141,24 +142,24 @@ class PhotoRegion {
     }
   }
 
-  /** 全部そろった（8 割読めれば OK）→ 裏で 1 枚の絵にして、見た目を写真に切り替える */
+  /** 全部そろった（8 割読めれば OK）→ 出来上がった絵をそのまま GPU に渡して、見た目を写真に切り替える */
   private finish(task: TileTask) {
     const need = Math.max(1, Math.ceil(task.tiles.length * 0.8));
     if (task.ok < need) {
-      this.log(`地面の写真（${this.def.label}）: 読めなかった（成功 ${task.ok} / 失敗 ${task.fail}）→ 簡易な地面のまま`);
-      this.disabled = true;
+      this.log(`地面の写真（${this.def.label}）: 読めなかった（成功 ${task.ok} / 失敗 ${task.fail}）→ 簡易な地面のまま（次に動いたらまた試します）`);
+      // anchor は残す → カメラが reanchor 分だけ動いたら自動で再挑戦する（一度の通信失敗で諦めると「途中から写真が出なくなった」と感じやすいため）
       return;
     }
-    const ctx = this.canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) { this.disabled = true; return; }
-    const d = ctx.getImageData(0, 0, this.canvas.width, this.canvas.height).data;
-    const tex = new THREE.DataTexture(new Uint8Array(d.buffer.slice(0)), this.canvas.width, this.canvas.height, THREE.RGBAFormat, THREE.UnsignedByteType);
+    // 版 23: 以前はここで絵全体（最大 2560×2560）のピクセルを丸ごと JS 側にコピーしてから渡していた。
+    // この 26MB の丸写しが「画面を担当する一本道」で数十 ms 止まること＝引っかかりの一因だった。
+    // 描き貯めた canvas をそのまま GPU の絵にする（JS 側のコピーなし）方式に変更。
+    const tex = new THREE.CanvasTexture(this.canvas);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.generateMipmaps = true;
     tex.minFilter = THREE.LinearMipmapLinearFilter;
     tex.magFilter = THREE.LinearFilter;
     tex.anisotropy = 4;
-    tex.flipY = false;
+    tex.flipY = false; // DataTexture（版 22）と同じ向き（目視確認済みの向きを維持する）
     tex.needsUpdate = true;
     const prev = this.tex;
     this.tex = tex;
