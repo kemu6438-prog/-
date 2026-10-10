@@ -7,6 +7,7 @@ import * as THREE from "three/webgpu";
 import type { LocalFrame } from "../core/geo";
 import { depthPrepassMaterial, ensureFloatAttribute, facadeMaterial, farFacadeMaterial, findIdAttribute, plainMaterial } from "./facade";
 import { addSkirt } from "./skirt";
+import { buildRoofExtras, type ExtrasGeom } from "./roofExtras";
 import type { Warmup } from "../render/warmup";
 import { Footprints } from "./footprints";
 import { WALL_ATTR, addWallTangents, ensureWallAttribute } from "./walls";
@@ -63,6 +64,8 @@ export class Buildings {
   prepass = new URLSearchParams(location.search).get("prepass") !== "0";
   /** ?facade=0 で壁の凝った塗りをやめて単色にする（重さの原因が壁の塗りかどうかを調べる比較用） */
   facadeOn = new URLSearchParams(location.search).get("facade") !== "0";
+  /** 版 24: 屋根の形（切妻）・屋上の小物を付け足す（?extra=0 で無効。重さの比較用） */
+  roofExtrasOn = new URLSearchParams(location.search).get("extra") !== "0";
   /** 1: 箱形(LOD1)に窓や色を塗る / 2: 詳細モデル(LOD2)をそのまま表示（重い） */
   lod: 1 | 2 = 1;
   /** 読み込み済みタイルの三角形の数（重さの目安） */
@@ -108,6 +111,8 @@ export class Buildings {
       const tLoad0 = performance.now();
       this.loadedTiles++;
       let tri = 0;
+      // 版 24: 切妻屋根・屋上小物（モデルの座標で作って、元の建物と同じ行列・同じ親に置くための作業用）
+      const extraJobs: { ex: ExtrasGeom; parent: THREE.Object3D; mtx: THREE.Matrix4 }[] = [];
       scene.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh || mesh.userData.isPrepass) return;
@@ -154,7 +159,32 @@ export class Buildings {
           mesh.add(pre);
           mesh.userData.hasPrepass = true;
         }
+        // 版 24: 屋根の形（切妻）・屋上の小物（塔屋・室外機・アンテナ）を、純粋な計算で作ってあとで置く
+        if (this.roofExtrasOn && idName) {
+          const ex = buildRoofExtras(g, idName, m.elements);
+          if (ex) { extraJobs.push({ ex, parent: mesh.parent ?? scene, mtx: mesh.matrix.clone() }); tri += ex.idx.length / 3; }
+        }
       });
+      // 版 24: 作った凸凹を、元の建物と同じ置き方（同じ行列・同じ親）でタイルに足す
+      if (extraJobs.length > 0) {
+        const exMat = new THREE.MeshStandardNodeMaterial({ vertexColors: true });
+        exMat.roughness = 0.94;
+        exMat.metalness = 0.0;
+        for (const j of extraJobs) {
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute("position", new THREE.BufferAttribute(j.ex.pos, 3));
+          geo.setAttribute("normal", new THREE.BufferAttribute(j.ex.nrm, 3));
+          geo.setAttribute("color", new THREE.BufferAttribute(j.ex.col, 3));
+          geo.setIndex(new THREE.BufferAttribute(j.ex.idx, 1));
+          const xm = new THREE.Mesh(geo, exMat);
+          xm.castShadow = true;
+          xm.receiveShadow = false;
+          xm.matrixAutoUpdate = false;
+          xm.matrix.copy(j.mtx);
+          xm.userData.roofExtra = true;
+          j.parent.add(xm);
+        }
+      }
       // 初めて描く組み合わせ（材質 × 形の持ち物）は、準備ができるまで見せない。準備は裏で、1 つずつ
       const w = this.warm;
       if (w && w.enabled && this.lod === 1 && this.facadeOn) {

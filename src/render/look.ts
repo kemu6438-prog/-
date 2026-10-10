@@ -15,6 +15,8 @@ export type Look = {
   render(): void;
   /** 性能の切り分け用: 影を切る */
   setOptions(o: Partial<{ shadow: boolean }>): void;
+  /** 版 24: 空気感（遠くの霞・ほんの少しの明るさ）のあり/なし */
+  setAir(on: boolean): void;
   /** true の間は影の絵を描き直さない（測定用） */
   freezeShadow(b: boolean): void;
   /** 影の絵を描き直した回数（確認用） */
@@ -92,11 +94,14 @@ export function setupLook(
 
   // --- かすみ（遠くほど空の色に溶ける） ---
   scene.background = null;
-  scene.fog = new THREE.FogExp2(0xbdd3ea, num("fog", 0.00024));
+  const fogDen = num("fog", 0.00024);
+  const fog = new THREE.FogExp2(0xbdd3ea, fogDen);
+  scene.fog = fog;
 
   // --- 色調（映画のような階調） ---
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = num("exp", 0.6);
+  const expBase = num("exp", 0.6);
+  renderer.toneMappingExposure = expBase;
   renderer.shadowMap.enabled = true;
   // 影の縁のぼかしは、軽い方式（PCF）にする。PCFSoft は 1 画素あたりの参照回数が多く、影を受ける全部の面で重くなる
   renderer.shadowMap.type = qs.get("softshadow") === "1" ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
@@ -173,6 +178,12 @@ export function setupLook(
     setQuality(quality);
   };
 
+  // 版 24: 空気感の強さ（遠くの霞を強めて、街が続いている感じにする + 少し明るく）。費用は 0 に近い。?air=0 で最初は「なし」
+  const setAir = (on: boolean) => {
+    fog.density = on ? fogDen * 1.8 : fogDen;
+    renderer.toneMappingExposure = on ? expBase + 0.06 : expBase;
+  };
+
   return {
     group,
     get quality() { return quality; },
@@ -181,6 +192,7 @@ export function setupLook(
     update,
     render,
     setOptions,
+    setAir,
     freezeShadow: (b: boolean) => { shadowFrozen = b; },
     shadowRedraws: () => shadowRedraws,
     sunDir,

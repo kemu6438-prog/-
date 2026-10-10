@@ -2,7 +2,7 @@
 // 本物の建物データ（PLATEAU）を、名古屋（名駅・栄）や東京駅の上空に表示して、
 // 読み込み量とコマ数を測る。まだ「街」ではなく、箱形の建物と平らな地面だけ。
 /** この配布物の番号（反映されたかの確認用。パネルのログと、ページのタイトルに出る） */
-const BUILD_ID = "23";
+const BUILD_ID = "24";
 import { StallMeter } from "./core/stalls";
 import { Warmup } from "./render/warmup";
 import * as THREE from "three/webgpu";
@@ -36,6 +36,14 @@ const PLACES: Place[] = [
   { id: "sakae", label: "栄", lat: 35.1705, lon: 136.9084, codes: ["231"], groundH: 41 },
   { id: "tokyo", label: "（予備）東京駅", lat: 35.6812, lon: 139.7671, codes: ["13101", "13102"], groundH: 40 },
 ];
+// 版 24: ?lat=..&lon=.. で好きな場所から始められる（検証・お試し用。地面の高さは名古屋並みの仮の値。合わなければボタンで調整）
+{
+  const qLat = Number(new URLSearchParams(location.search).get("lat"));
+  const qLon = Number(new URLSearchParams(location.search).get("lon"));
+  if (Number.isFinite(qLat) && Math.abs(qLat) > 1e-6 && Number.isFinite(qLon) && Math.abs(qLon) > 1e-6 && Math.abs(qLat) <= 90 && Math.abs(qLon) <= 360) {
+    PLACES.unshift({ id: "custom", label: "指定の場所", lat: qLat, lon: qLon, codes: qLon > 139 ? ["13101", "13102"] : ["231"], groundH: 41 });
+  }
+}
 
 async function gpuName(): Promise<string> {
   try {
@@ -214,6 +222,23 @@ async function main() {
     $("shadowrow").appendChild(b);
   });
   shadowBtns.on.classList.add("on");
+  // 版 24: 雰囲気（遠くの霞・空気感）のあり/なし。初期は、あり（?air=0 なら、なし）
+  const airBtns: Record<string, HTMLButtonElement> = {};
+  const setAir = (on: boolean, say = true) => {
+    look.setAir(on);
+    airBtns.on.classList.toggle("on", on);
+    airBtns.off.classList.toggle("on", !on);
+    if (say) log(`雰囲気: ${on ? "あり" : "なし"}`);
+  };
+  ([["on", "あり"], ["off", "なし"]] as const).forEach(([k, label]) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = () => setAir(k === "on");
+    airBtns[k] = b;
+    $("airrow").appendChild(b);
+  });
+  const air0 = new URLSearchParams(location.search).get("air") !== "0";
+  setAir(air0, false);
   const setRatio = (r: number) => {
     curRatio = r;
     renderer.setPixelRatio(r);

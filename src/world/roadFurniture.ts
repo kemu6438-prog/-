@@ -5,7 +5,7 @@ export type TreeInst = { x: number; z: number; rot: number; scale: number; tint:
 export type LampInst = { x: number; z: number; rot: number };
 /** 生け垣・標識・自動販売機など、向きと大きさだけを持つ小物 */
 export type PropInst = { x: number; z: number; rot: number; scale: number; tint: number };
-export type Furniture = { trees: TreeInst[]; lamps: LampInst[]; hedges: PropInst[]; signs: PropInst[]; vends: PropInst[]; shrubs: PropInst[]; tufts: PropInst[] };
+export type Furniture = { trees: TreeInst[]; lamps: LampInst[]; hedges: PropInst[]; signs: PropInst[]; vends: PropInst[]; shrubs: PropInst[]; tufts: PropInst[]; poles: LampInst[]; wires: number[] };
 
 function rng(seed: number) {
   let a = (seed * 2654435761) >>> 0;
@@ -78,7 +78,7 @@ function* walk(line: RoadLine, start: number, step: number, jitter: () => number
   }
 }
 
-export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { others?: RoadLine[] } = {}): Furniture {
+export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { others?: RoadLine[]; poles?: boolean } = {}): Furniture {
   // となりのタイルの道も「車道に入っているか」の判定に使う（タイルの境目で、他の道の上に置かないため）
   const grid = new SegGrid(opts.others ? lines.concat(opts.others) : lines);
   const trees: TreeInst[] = [];
@@ -88,6 +88,8 @@ export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { ot
   const vends: PropInst[] = [];
   const shrubs: PropInst[] = [];
   const tufts: PropInst[] = [];
+  const poles: LampInst[] = [];
+  const wires: number[] = [];
 
   for (const line of lines) {
     if (line.rank < 2 || line.length < 20) continue;
@@ -159,7 +161,42 @@ export function placeFurniture(lines: RoadLine[], _nodes: RoadNode[], opts: { ot
         lamps.push({ x, z, rot: Math.atan2(-tz, tx) });
       }
     }
+    // 版 24: 電柱と電線（少なめ。広い道の片側に、およそ 60 m おき。以前「なし」で、見た目重視で少し戻す）
+    if (opts.poles && line.length >= 50) {
+      const sg = rng(line.id + 3131)() < 0.5 ? 1 : -1;
+      const off = hr + 0.45;
+      const rpp = rng(line.id + 3131);
+      let prev: { x: number; z: number } | null = null;
+      for (const q of walk(line, 8 + rpp() * 22, 58, () => 0)) {
+        if (!edgeFree(q.s, 10)) { prev = null; continue; }
+        const x = q.x - q.dz * sg * off, z = q.z + q.dx * sg * off;
+        if (grid.blocked(x, z, line)) { prev = null; continue; }
+        // 腕は道と直角（道の中心側 → 歩道側の向き）
+        const ax = -q.dz * sg, az = q.dx * sg;
+        poles.push({ x, z, rot: Math.atan2(-az, ax) });
+        if (prev) {
+          // 電線 3 本（てっぺん 1 本・腕の両はし 2 本）。少したるませる（4 つの短い線分で近似的に）
+          const d = Math.hypot(x - prev.x, z - prev.z);
+          if (d <= 90) {
+            const sag = Math.min(Math.max(d * 0.035, 0.3), 2.0);
+            for (const [yA, yB, armA, armB] of [[11.75, 11.75, 0, 0], [10.1, 10.1, 1.08, 1.08], [10.1, 10.1, -1.08, -1.08]] as const) {
+              const x0 = prev.x + ax * armA, z0 = prev.z + az * armA;
+              const x1 = x + ax * armB, z1 = z + az * armB;
+              for (let i = 0; i < 4; i++) {
+                const t0 = i / 4, t1 = (i + 1) / 4;
+                const dip = (tt: number) => 4 * sag * tt * (1 - tt); // 両はし 0、真ん中がいちばん下がる放物線
+                wires.push(
+                  x0 + (x1 - x0) * t0, yA + (yB - yA) * t0 - dip(t0), z0 + (z1 - z0) * t0,
+                  x0 + (x1 - x0) * t1, yA + (yB - yA) * t1 - dip(t1), z0 + (z1 - z0) * t1,
+                );
+              }
+            }
+          }
+        }
+        prev = { x, z };
+      }
+    }
   }
 
-  return { trees, lamps, hedges, signs, vends, shrubs, tufts };
+  return { trees, lamps, hedges, signs, vends, shrubs, tufts, poles, wires };
 }

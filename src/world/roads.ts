@@ -242,6 +242,29 @@ function lampGeometry(): THREE.BufferGeometry {
   ].map((g) => (g.deleteAttribute("uv"), g)))!;
 }
 
+/** 版 24: 電柱（丸柱＋腕金＋足元の黄黒の帯。腕は +x と -x の両側に少し出る） */
+function poleGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const body = new THREE.CylinderGeometry(0.13, 0.19, 12.4, 7);
+  body.translate(0, 6.2, 0);
+  parts.push(paint(bare(body), 0x9a9da2));
+  const arm = new THREE.BoxGeometry(2.25, 0.1, 0.1);
+  arm.translate(0, 10.05, 0);
+  parts.push(paint(bare(arm), 0x84888d));
+  const tip = new THREE.CylinderGeometry(0.05, 0.15, 0.7, 5); // てっぺんの細い出っ張り
+  tip.translate(0, 12.05, 0);
+  parts.push(paint(bare(tip), 0x84888d));
+  const stripe = new THREE.BoxGeometry(0.42, 1.7, 0.42);
+  stripe.translate(0, 0.95, 0);
+  parts.push(paint(bare(stripe), 0xe8c21a));
+  for (const y of [0.55, 1.35]) {
+    const band = new THREE.BoxGeometry(0.435, 0.24, 0.435);
+    band.translate(0, y, 0);
+    parts.push(paint(bare(band), 0x232528));
+  }
+  return mergeGeometries(parts.map((g) => (g.deleteAttribute("uv"), g)))!;
+}
+
 // ---------------------------------------------------------------------------
 // 置く側
 // ---------------------------------------------------------------------------
@@ -346,6 +369,9 @@ export class Roads {
   private readonly treeGeoA = treeCardGeometry(0);
   private readonly treeGeoB = treeCardGeometry(1);
   private readonly lampGeo = lampGeometry();
+  private readonly poleGeo = poleGeometry();
+  /** 電柱と電線を置くか（少なめに復活。?poles=0 で無効） */
+  private readonly polesOn = new URLSearchParams(location.search).get("poles") !== "0";
   private readonly hedgeGeo = hedgeGeometry();
   private readonly signGeo = signGeometry();
   private readonly vendGeo = vendGeometry();
@@ -356,6 +382,7 @@ export class Roads {
   setWarmup(w: Warmup) { this.warm = w; }
   private readonly treeMat: THREE.MeshStandardNodeMaterial;
   private readonly metalMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.3, vertexColors: true });
+  private readonly wireMat = new THREE.LineBasicMaterial({ color: 0x23262b });
   private token = 0;
   /** 道を読み込む範囲（カメラから m） */
   radius = 1500;
@@ -751,7 +778,7 @@ export class Roads {
     for (const o of this.tiles.values()) {
       if (o !== t && Math.abs(o.tx - t.tx) <= 1 && Math.abs(o.ty - t.ty) <= 1) for (const l of o.lines) others.push(l);
     }
-    const f: Furniture = placeFurniture(t.lines, t.nodes, { others });
+    const f: Furniture = placeFurniture(t.lines, t.nodes, { others, poles: this.polesOn });
     const fg = new THREE.Group();
     fg.name = `road-furniture-${t.key}`;
     const lods: Lod[] = [];
@@ -786,9 +813,26 @@ export class Roads {
     lods.push({ draw: 150, shadow: 0, meshes: chunkedInstances(fg, this.vendGeo, this.metalMat, f.vends, (p, m) => {
       m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
     }, { origin, cell: 250, margin: 0 }) });
+    // 版 24: 電柱（柱と腕はインスタンス）＋ 電線（細い線のまとまり。柱どうしをつなぐ）
+    if (f.poles.length > 0) {
+      lods.push({ draw: 300, shadow: 0, meshes: chunkedInstances(fg, this.poleGeo, this.metalMat, f.poles, (p, m) => {
+        m.compose(new THREE.Vector3(p.x, 0, p.z), new THREE.Quaternion().setFromAxisAngle(Y, p.rot), new THREE.Vector3(1, 1, 1));
+      }, { origin, cell: 250, margin: 0.2 }) });
+      if (f.wires.length > 0) {
+        const wg = new THREE.BufferGeometry();
+        wg.setAttribute("position", new THREE.BufferAttribute(Float32Array.from(f.wires), 3));
+        const wm = new THREE.LineSegments(wg, this.wireMat);
+        wg.computeBoundingSphere();
+        // 距離で出し分けるために、塊（メッシュ自身）にも境界情報を持たせる
+        (wm as unknown as { boundingSphere: THREE.Sphere | null }).boundingSphere = wg.boundingSphere ? wg.boundingSphere.clone() : null;
+        fg.add(wm);
+        lods.push({ draw: 320, shadow: 0, meshes: [wm as unknown as THREE.InstancedMesh] });
+      }
+    }
     const triOf = (g: THREE.BufferGeometry, k: number) => (g.index ? g.index.count : g.getAttribute("position").count) / 3 * k;
     t.tris = t.tris + triOf(this.treeGeoA, f.trees.length) + triOf(this.lampGeo, f.lamps.length)
-      + triOf(this.shrubGeo, f.shrubs.length) + triOf(this.hedgeGeo, f.hedges.length) + triOf(this.signGeo, f.signs.length) + triOf(this.vendGeo, f.vends.length);
+      + triOf(this.shrubGeo, f.shrubs.length) + triOf(this.hedgeGeo, f.hedges.length) + triOf(this.signGeo, f.signs.length) + triOf(this.vendGeo, f.vends.length)
+      + triOf(this.poleGeo, f.poles.length);
     t.trees = f.trees.length;
     t.lamps = f.lamps.length;
     t.fgroup = fg;

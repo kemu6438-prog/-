@@ -133,9 +133,20 @@ function buildLook(idRaw: N): Out {
   const concreteD: N = TEX.wall.detail(surf);
   const mottle: N = float(0.9).add(vnoise(surf.mul(0.28)).mul(0.2));
   const grounded: N = mix(float(0.7), float(1.0), smoothstep(0.0, 14.0, y));
-  const lit: N = mix(rgb.mul(mix(vec3(1.0, 1.0, 1.0), wallBase, tintAmt)), rgb.mul(glassTint), glass)
+  // 版 24: 窓 1 枚ごとの明るさのちがい（全然ちがう部屋・カーテンの有無）。たまに強く光って見える（日中の反射）
+  const winCell: N = floor(uMeters.div(bayW)).add(floor(y.div(floorH)).mul(19.7)).add(id.mul(0.37));
+  const winH: N = hash(winCell);
+  const glassJit: N = float(0.72).add(winH.mul(0.55)).add(step(0.88, winH).mul(0.45));
+  // 版 24: 汚れ。①上から下へ伸びる雨だれ（横方向は細かく・縦方向はゆるい しま）②地面まわりのすす・コケ
+  const streak: N = vnoise(vec2(uMeters.mul(7.1), y.mul(0.35)));
+  const streakK: N = streak.mul(streak).mul(0.2);
+  const grimeK: N = float(1.0).sub(smoothstep(0.5, 3.0, y));
+  const dirtAmt: N = clamp(streakK.add(grimeK.mul(0.26)).add(streak.mul(grimeK).mul(0.3)), 0.0, 0.5);
+  const dirt: N = mix(vec3(1.0, 1.0, 1.0), vec3(0.6, 0.63, 0.56), dirtAmt);
+  const lit: N = mix(rgb.mul(mix(vec3(1.0, 1.0, 1.0), wallBase, tintAmt)), rgb.mul(glassTint).mul(glassJit), glass)
     .mul(mix(vec3(1.0, 1.0, 1.0), concreteD, detailK.mul(float(1.0).sub(glass))))
-    .mul(mottle).mul(grounded);
+    .mul(mottle).mul(grounded)
+    .mul(mix(vec3(1.0, 1.0, 1.0), dirt, float(1.0).sub(glass)));
   const wallColor: N = lit;
 
   // --- 屋根 ---

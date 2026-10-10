@@ -84,3 +84,40 @@ describe("道の帯", () => {
     expect(Math.abs(sw.position[0] - sw.position[3])).toBeCloseTo(8.6 + 4.0, 3);
   });
 });
+
+describe("電柱と電線", () => {
+  const straight = (len: number): import("../src/world/roadData").RoadLine => ({
+    id: 7,
+    pts: Float32Array.from([0, 0, 0, -len]),
+    rank: 2,
+    ctg: 0,
+    startShift: -1,
+    endShift: -1,
+    startNode: -1,
+    endNode: -1,
+    startCut: false,
+    endCut: false,
+    length: len,
+  });
+
+  it("広い道には柱が並び、となりどうしが 3 本の線でつながる（数は控えめ）", () => {
+    const f = placeFurniture([straight(300)], [], { poles: true });
+    expect(f.poles.length).toBeGreaterThan(2);
+    expect(f.poles.length).toBeLessThan(300 / 30); // 間隔は 58 m おきが目安
+    // 柱は道の中心から、道の外（歩道ぎわ）に置かれている（この線は -z 方向へ進む）
+    for (const p of f.poles) expect(Math.abs(p.x)).toBeGreaterThan(1);
+    expect(f.wires.length % 24).toBe(0); // 1 区間 = 3 本 × 4 線分 ×（2 点 × 3 成分）
+    if (f.wires.length > 0) {
+      for (let i = 1; i < f.wires.length; i += 3) {
+        expect(f.wires[i]).toBeGreaterThan(7.5); // 高すぎず低すぎず（柱の高さの範囲）
+        expect(f.wires[i]).toBeLessThan(12.1);
+      }
+    }
+  });
+
+  it("電柱なしの指定なら置かない", () => {
+    const f = placeFurniture([straight(300)], [], {});
+    expect(f.poles.length).toBe(0);
+    expect(f.wires.length).toBe(0);
+  });
+});
