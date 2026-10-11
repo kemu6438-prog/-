@@ -1,21 +1,11 @@
-// 版 24: 箱（LOD1）の建物に「屋根の形」と「屋上の小物」を付け足す。
+// 版 24/25: 箱（LOD1）の建物に「屋根の形」と「屋上の小物」を付け足す。
 // ・低くて小さな建物（戸建てなど）: いちばん長い辺に沿って 切妻屋根（三角の屋根、軒つき）を載せる
 // ・平らな屋根のままの建物: 塔屋・室外機・アンテナを載せる（街の空に凸凹が出る）
-// three.js に依存しない純粋な処理（型だけ使う）。出力は モデルの座標系（入力と同じ）。
+// three.js に依存しない純粋な処理（型だけ使う）。
+// 出力は【表示の座標（toWorld を掛けたあとの座標）】。置く側は「行列を掛けず、そのまま置く」こと。
 
 export type ExtrasGeom = { pos: Float32Array; nrm: Float32Array; col: Float32Array; idx: Uint32Array };
 
-/** 3×3 の逆行列（列優先 16 要素の左上 3×3）。無ければ null */
-function inv3(e: ArrayLike<number>): number[] | null {
-  const a = e[0], b = e[4], c = e[8];
-  const d = e[1], f = e[5], g = e[9];
-  const h = e[2], i = e[6], j = e[10];
-  const A = f * j - g * i, B = g * h - d * j, C = d * i - f * h;
-  const det = a * A + b * B + c * C;
-  if (Math.abs(det) < 1e-12) return null;
-  const k = 1 / det;
-  return [A * k, (c * i - b * j) * k, (b * g - c * f) * k, B * k, (a * j - c * h) * k, (c * d - a * g) * k, C * k, (b * h - a * i) * k, (a * f - b * d) * k];
-}
 
 /** 簡単な決定論ハッシュ（同じ建物にはいつも同じ結果を） */
 function hash01(x: number): number {
@@ -74,8 +64,6 @@ export function buildRoofExtras(g: { getAttribute(n: string): { getX(i: number):
   const pos = g.getAttribute("position");
   const ids = idName ? g.getAttribute(idName) : null;
   if (!pos || !ids || pos.itemSize < 3) return null;
-  const inv = inv3(toWorld);
-  if (!inv) return null;
   const t = [toWorld[12], toWorld[13], toWorld[14]];
   const n = pos.count;
   const idx = g.index;
@@ -114,28 +102,17 @@ export function buildRoofExtras(g: { getAttribute(n: string): { getX(i: number):
   if (byId.size === 0) return null;
 
   const bag = new Bag();
-  // ワールドで作った点 → モデルの座標に戻す
-  const toLocal = (x: number, y: number, z: number): [number, number, number] => {
-    const dx = x - t[0], dy = y - t[1], dz = z - t[2];
-    return [inv[0] * dx + inv[3] * dy + inv[6] * dz, inv[1] * dx + inv[4] * dy + inv[7] * dz, inv[2] * dx + inv[5] * dy + inv[8] * dz];
-  };
-  const nLocal = (x: number, y: number, z: number): [number, number, number] => {
-    const p = [inv[0] * x + inv[3] * y + inv[6] * z, inv[1] * x + inv[4] * y + inv[7] * z, inv[2] * x + inv[5] * y + inv[8] * z];
-    const l = Math.hypot(p[0], p[1], p[2]) || 1;
-    return [p[0] / l, p[1] / l, p[2] / l];
-  };
   const triW = (A: number[], B: number[], C: number[], col: number[], nw: number[]) => {
-    const p1 = toLocal(A[0], A[1], A[2]), p2 = toLocal(B[0], B[1], B[2]), p3 = toLocal(C[0], C[1], C[2]);
-    const nl = nLocal(nw[0], nw[1], nw[2]);
-    bag.tri(p1[0], p1[1], p1[2], p2[0], p2[1], p2[2], p3[0], p3[1], p3[2], col[0], col[1], col[2], nl[0], nl[1], nl[2]);
+    // 版 25: 作った点は「表示の座標」のまま出す（置く側は何も掛けず、そのまま置く）
+    const l = Math.hypot(nw[0], nw[1], nw[2]) || 1;
+    bag.tri(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2], col[0], col[1], col[2], nw[0] / l, nw[1] / l, nw[2] / l);
   };
   const quadW = (A: number[], B: number[], C: number[], D: number[], col: number[], nw: number[]) => {
-    const p1 = toLocal(A[0], A[1], A[2]), p2 = toLocal(B[0], B[1], B[2]), p3 = toLocal(C[0], C[1], C[2]), p4 = toLocal(D[0], D[1], D[2]);
-    const nl = nLocal(nw[0], nw[1], nw[2]);
-    bag.quad(p1[0], p1[1], p1[2], p2[0], p2[1], p2[2], p3[0], p3[1], p3[2], p4[0], p4[1], p4[2], col[0], col[1], col[2], nl[0], nl[1], nl[2]);
+    const l = Math.hypot(nw[0], nw[1], nw[2]) || 1;
+    bag.quad(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2], D[0], D[1], D[2], col[0], col[1], col[2], nw[0] / l, nw[1] / l, nw[2] / l);
   };
   const boxW = (cx: number, cz: number, y0: number, sx: number, sy: number, sz: number, ux: number, uz: number, col: number[]) => {
-    // ワールドで箱を作る（toLocal へ渡すため、いったん自前で組み立てる）
+    // 表示の座標で箱を作る
     const vx = -uz, vz = ux, hx = sx / 2, hz = sz / 2, y1 = y0 + sy;
     const pt = (a: number, b2: number, y: number) => [cx + ux * a * hx + vx * b2 * hz, y, cz + uz * a * hx + vz * b2 * hz];
     const p = [pt(-1, -1, y0), pt(1, -1, y0), pt(1, 1, y0), pt(-1, 1, y0), pt(-1, -1, y1), pt(1, -1, y1), pt(1, 1, y1), pt(-1, 1, y1)];

@@ -71,6 +71,18 @@ export class Buildings {
   /** 読み込み済みタイルの三角形の数（重さの目安） */
   private triangles = 0;
   private readonly triOf = new WeakMap<object, number>();
+  /** 版 25: 屋根の凸凹のまとめメッシュ（タイルの捨て忘れ防止と、まとめて消すため）。形の中身はタイルごと、塗りの材質は 1 個を共有 */
+  private readonly extrasOf = new Map<object, THREE.Mesh>();
+  private extrasMatShared: THREE.MeshStandardNodeMaterial | null = null;
+  private extrasMaterial(): THREE.MeshStandardNodeMaterial {
+    if (!this.extrasMatShared) {
+      const m = new THREE.MeshStandardNodeMaterial({ vertexColors: true });
+      m.roughness = 0.94;
+      m.metalness = 0.0;
+      this.extrasMatShared = m;
+    }
+    return this.extrasMatShared;
+  }
 
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
@@ -111,8 +123,9 @@ export class Buildings {
       const tLoad0 = performance.now();
       this.loadedTiles++;
       let tri = 0;
-      // 版 24: 切妻屋根・屋上小物（モデルの座標で作って、元の建物と同じ行列・同じ親に置くための作業用）
-      const extraJobs: { ex: ExtrasGeom; parent: THREE.Object3D; mtx: THREE.Matrix4 }[] = [];
+      // 版 25: 切妻屋根・屋上小物は、建物ごとの部品ではなく「タイルごとに 1 個」にまとめて建てる（重さ対策）
+      const extrasParts: ExtrasGeom[] = [];
+      let extraVerts = 0, extraIdx = 0;
       scene.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh || mesh.userData.isPrepass) return;
@@ -159,31 +172,38 @@ export class Buildings {
           mesh.add(pre);
           mesh.userData.hasPrepass = true;
         }
-        // 版 24: 屋根の形（切妻）・屋上の小物（塔屋・室外機・アンテナ）を、純粋な計算で作ってあとで置く
+        // 版 24/25: 屋根の形（切妻）・屋上の小物（塔屋・室外機・アンテナ）を純粋な計算で作る。
+        // m には「表示の座標にする行列」が全部入っているので、出来上がる頂点は表示の座標そのもの
         if (this.roofExtrasOn && idName) {
           const ex = buildRoofExtras(g, idName, m.elements);
-          if (ex) { extraJobs.push({ ex, parent: mesh.parent ?? scene, mtx: mesh.matrix.clone() }); tri += ex.idx.length / 3; }
+          if (ex) { extrasParts.push(ex); extraVerts += ex.pos.length / 3; extraIdx += ex.idx.length; tri += ex.idx.length / 3; }
         }
       });
-      // 版 24: 作った凸凹を、元の建物と同じ置き方（同じ行列・同じ親）でタイルに足す
-      if (extraJobs.length > 0) {
-        const exMat = new THREE.MeshStandardNodeMaterial({ vertexColors: true });
-        exMat.roughness = 0.94;
-        exMat.metalness = 0.0;
-        for (const j of extraJobs) {
-          const geo = new THREE.BufferGeometry();
-          geo.setAttribute("position", new THREE.BufferAttribute(j.ex.pos, 3));
-          geo.setAttribute("normal", new THREE.BufferAttribute(j.ex.nrm, 3));
-          geo.setAttribute("color", new THREE.BufferAttribute(j.ex.col, 3));
-          geo.setIndex(new THREE.BufferAttribute(j.ex.idx, 1));
-          const xm = new THREE.Mesh(geo, exMat);
-          xm.castShadow = true;
-          xm.receiveShadow = false;
-          xm.matrixAutoUpdate = false;
-          xm.matrix.copy(j.mtx);
-          xm.userData.roofExtra = true;
-          j.parent.add(xm);
+      // 版 25: 部品を全部 1 つの形にまとめて「タイル 1 枚につき 1 個」で置く。
+      // 置き場所は建物のまとめ役（this.group。何も掛けていない）にそのまま（頂点はもう表示の座標）
+      if (extrasParts.length > 0) {
+        const pos = new Float32Array(extraVerts * 3);
+        const nrm = new Float32Array(extraVerts * 3);
+        const col = new Float32Array(extraVerts * 3);
+        const idx = extraVerts > 65535 ? new Uint32Array(extraIdx) : new Uint16Array(extraIdx);
+        let vo = 0, io = 0;
+        for (const p of extrasParts) {
+          pos.set(p.pos, vo * 3); nrm.set(p.nrm, vo * 3); col.set(p.col, vo * 3);
+          for (let k = 0; k < p.idx.length; k++) idx[io + k] = p.idx[k] + vo;
+          vo += p.pos.length / 3; io += p.idx.length;
         }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
+        geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+        geo.setIndex(new THREE.BufferAttribute(idx, 1));
+        const xm = new THREE.Mesh(geo, this.extrasMaterial());
+        xm.castShadow = true;
+        xm.receiveShadow = false;
+        xm.matrixAutoUpdate = false;
+        xm.userData.roofExtra = true;
+        this.extrasOf.set(scene, xm);
+        this.group.add(xm);
       }
       // 初めて描く組み合わせ（材質 × 形の持ち物）は、準備ができるまで見せない。準備は裏で、1 つずつ
       const w = this.warm;
@@ -217,6 +237,9 @@ export class Buildings {
       this.loadedTiles = Math.max(0, this.loadedTiles - 1);
       scene.traverse((o) => { if (this.styled.delete(o as THREE.Mesh)) this.styledDirty = true; });
       this.triangles -= this.triOf.get(scene) ?? 0;
+      // 屋根の凸凹（まとめメッシュ）もいっしょに捨てる（捨て忘れると、空に残る・溜まって重くなる）
+      const xm = this.extrasOf.get(scene);
+      if (xm) { this.extrasOf.delete(scene); this.group.remove(xm); xm.geometry.dispose(); }
     });
     tiles.addEventListener("load-error", ({ error, url }) => {
       this.onMessage(`読み込み失敗: ${error?.message ?? error} (${String(url).slice(-60)})`);
@@ -239,6 +262,9 @@ export class Buildings {
       r.tiles.dispose();
     }
     this.renderers.length = 0;
+    // 屋根の凸凹のまとめメッシュも全部捨てる
+    for (const xm of this.extrasOf.values()) { this.group.remove(xm); xm.geometry.dispose(); }
+    this.extrasOf.clear();
     this.footprints.clear();
     this.styled.clear();
     this.styledDirty = true;

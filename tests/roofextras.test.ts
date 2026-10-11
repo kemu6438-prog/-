@@ -50,7 +50,7 @@ describe("箱の建物に屋根・小物を付け足す", () => {
     expect(m).toBeLessThan(40 + 8); // アンテナまで入れても、切妻のような大きな盛り上がりにはならない
   });
 
-  it("座標系がちがう（モデルは z が上）でも、ローカルの座標で正しく作れる", () => {
+  it("座標系がちがう（モデルは z が上）でも、表示の座標で正しく作れる", () => {
     // z が上の箱（8×6、高さは z 方向 4）
     const gz = ((): BufferGeometry => {
       const x = 4, z = 3, h = 4;
@@ -73,7 +73,9 @@ describe("箱の建物に屋根・小物を付け足す", () => {
       const ex = buildRoofExtras(g2, "_batchid", e);
       tried++;
       if (!ex) continue;
-      if (maxZ(ex) > 4 + 1.2) gable++;
+      // 出力は表示の座標（y が上）。切妻なら 4 + 1.2 を超える高さが出る
+      expect(maxZ(ex)).toBeLessThanOrEqual(4 + 0.2); // z 方向には 4 m までしか伸びない（座標を戻し忘れていない）
+      if (maxY(ex) > 4 + 1.2) gable++;
     }
     expect(gable).toBeGreaterThan(tried * 0.3);
   });
