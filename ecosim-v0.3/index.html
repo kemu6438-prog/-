@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ECOSIM（仮）— 生態系の心臓</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1118;
+        font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+        color: #e6edf3; font-size: 13px; }
+      #view { position: fixed; inset: 0; }
+      #view canvas { display: block; }
+      .panel { position: absolute; background: rgba(12, 18, 26, 0.84); border: 1px solid #2a3642;
+        border-radius: 10px; padding: 10px 12px; box-sizing: border-box; backdrop-filter: blur(4px); }
+      #top { top: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; align-items: center; white-space: nowrap; }
+      #top .title { font-weight: 700; letter-spacing: 0.04em; }
+      #top .sub { color: #8b98a5; font-size: 11px; }
+      .btn { background: #1b2735; color: #e6edf3; border: 1px solid #334455; border-radius: 6px; padding: 5px 10px;
+        cursor: pointer; font: inherit; }
+      .btn:hover { background: #24344a; }
+      .btn.on { background: #2f6fb0; border-color: #4f8fd0; }
+      .btn:disabled { opacity: 0.4; cursor: default; }
+      #left { left: 10px; top: 64px; width: 240px; }
+      #right { right: 10px; top: 64px; width: 330px; max-height: calc(100% - 84px); overflow: auto; }
+      h3 { margin: 6px 0 6px; font-size: 12px; color: #9fb3c8; font-weight: 600; letter-spacing: 0.05em; }
+      .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+      .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-variant-numeric: tabular-nums; }
+      .kv span:nth-child(odd) { color: #8b98a5; }
+      .hint { color: #7d8b99; font-size: 11px; line-height: 1.5; }
+      #log { height: 180px; overflow: auto; font-size: 12px; line-height: 1.5; border-top: 1px solid #22303e; margin-top: 6px; padding-top: 6px; }
+      #log div { border-bottom: 1px dashed #1e2a36; padding: 2px 0; }
+      #graph { width: 100%; height: 150px; display: block; background: #0a1017; border-radius: 6px; }
+      #legend { font-size: 11px; color: #9fb3c8; display: flex; gap: 10px; margin-top: 4px; }
+      #timeline { bottom: 10px; left: 260px; right: 350px; height: 44px; display: flex; align-items: center; gap: 10px; }
+      #season { font-size: 12px; color: #c8d4df; }
+      .bar { flex: 1; height: 8px; background: #1a2430; border-radius: 4px; overflow: hidden; }
+      .bar > div { height: 100%; background: linear-gradient(90deg, #4f8f3a, #a88f5a); }
+      #overlay { position: fixed; inset: 0; background: rgba(5, 9, 14, 0.7); display: none; align-items: center; justify-content: center; }
+      #overlay .card { background: #101923; border: 1px solid #36506b; border-radius: 12px; padding: 22px 26px; width: 460px; }
+      #overlay h2 { margin: 0 0 8px; font-size: 18px; }
+      #overlay .causes { margin: 10px 0; }
+      #radius { width: 120px; }
+      .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+      #tip { position: absolute; pointer-events: none; background: rgba(0,0,0,.8); border: 1px solid #334; padding: 4px 6px; border-radius: 4px; font-size: 11px; display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="view"></div>
+
+    <div id="top" class="panel">
+      <span class="title">ECOSIM（仮）</span>
+      <span class="sub" id="date">—</span>
+      <span class="sub" id="popTop">—</span>
+      <span style="width:8px"></span>
+      <button class="btn speed" data-speed="0">⏸</button>
+      <button class="btn speed" data-speed="0.25">0.25×</button>
+      <button class="btn speed on" data-speed="1">1×</button>
+      <button class="btn speed" data-speed="4">4×</button>
+      <button class="btn speed" data-speed="16">16×</button>
+      <button class="btn speed" data-speed="64">64×</button>
+      <span style="width:8px"></span>
+      <button class="btn" id="newWorld">新しい世界</button>
+    </div>
+
+    <div id="left" class="panel" style="max-height: calc(100vh - 110px); overflow-y: auto;">
+      <h3>ツール</h3>
+      <div class="row">
+        <button class="btn tool on" data-tool="observe">👁 観察</button>
+        <button class="btn tool" data-tool="burn">🔥 山火事</button>
+        <button class="btn tool" data-tool="spawn">🐾 草食獣を放す</button>
+        <button class="btn tool" data-tool="spawncarn">🦁 肉食獣を放す</button>
+      </div>
+      <div class="row">
+        <span class="hint">半径</span><input id="radius" type="range" min="10" max="60" value="25" />
+        <span id="radiusVal" class="hint">25m</span>
+      </div>
+      <div class="hint">左クリックで適用（山火事はドラッグ可）。右ドラッグ：回転／ホイール：ズーム／WASD・QE：視点移動（Shift で高速）。</div>
+      <h3>気候</h3>
+      <div class="row"><span class="hint" style="width:70px">気温補正</span><input id="setTemp" type="range" min="-10" max="10" step="0.5" value="0" /><span id="setTempV" class="hint" style="min-width:44px;white-space:nowrap">0℃</span></div>
+      <div class="row"><span class="hint" style="width:70px">降雨</span><input id="setRain" type="range" min="0.2" max="2.5" step="0.1" value="1" /><span id="setRainV" class="hint" style="min-width:44px;white-space:nowrap">×1.0</span></div>
+      <div class="row"><span class="hint" style="width:70px">季節の振幅</span><input id="setSeason" type="range" min="0" max="24" step="1" value="12" /><span id="setSeasonV" class="hint" style="min-width:44px;white-space:nowrap">12℃</span></div>
+      <div class="row"><span class="hint" style="width:70px">捕食圧</span><input id="setPred" type="range" min="0" max="2" step="0.1" value="1" /><span id="setPredV" class="hint" style="min-width:44px;white-space:nowrap">×1.0</span></div>
+      <h3>災害・イベント（クリック位置に作用）</h3>
+      <div class="row">
+        <button class="btn ev" data-event="cold">❄ 寒波</button>
+        <button class="btn ev" data-event="heat">☀ 熱波</button>
+        <button class="btn ev" data-event="drought">🏜 干ばつ</button>
+        <button class="btn ev" data-event="flood">🌧 豪雨</button>
+      </div>
+      <div class="row">
+        <button class="btn ev" data-event="meteor">☄ 隕石</button>
+        <button class="btn ev" data-event="plague">☣ 疫病</button>
+      </div>
+      <h3>この場所</h3>
+      <div id="probe" class="kv"><span>—</span><span>クリックで地形を確認</span></div>
+      <h3>世界</h3>
+      <div id="world" class="kv"></div>
+    </div>
+
+    <div id="right" class="panel">
+      <h3>統計</h3>
+      <canvas id="graph" width="660" height="300"></canvas>
+      <div id="legend">
+        <span><span class="swatch" style="background:#7fd16b"></span>草食獣の数</span>
+        <span><span class="swatch" style="background:#c9a24a"></span>草の充足率</span>
+        <span><span class="swatch" style="background:#c8553d"></span>肉食獣の数</span>
+      </div>
+      <h3>平均的な体（進化の指標）</h3>
+      <div id="traits" class="kv"></div>
+      <h3>選択中の個体</h3>
+      <div id="inspect" class="kv"><span>—</span><span>観察ツールで個体をクリック</span></div>
+      <h3>できごと</h3>
+      <div id="log"></div>
+    </div>
+
+    <div id="timeline" class="panel">
+      <span id="season">—</span>
+      <div class="bar"><div id="yearBar" style="width:0%"></div></div>
+      <span class="hint">1日 = 実時間60秒 ／ 1年 = 2分</span>
+    </div>
+
+    <div id="overlay">
+      <div class="card">
+        <h2>全滅しました</h2>
+        <div id="extinctText" class="hint"></div>
+        <div id="causes" class="causes kv"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" id="retry">同じ条件で再挑戦</button>
+          <button class="btn on" id="newWorld2">新しい世界</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="tip"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
